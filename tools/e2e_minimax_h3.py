@@ -143,9 +143,10 @@ async def run(server: str, graph: dict) -> dict:
     with urllib.request.urlopen(f'{server}/history/{prompt_id}') as response:
         history = json.load(response).get(prompt_id, {})
     outputs = history.get('outputs', {}).get('16', {})
-    report['files'] = [f.get('filename') for key in ('images', 'videos',
-                                                     'animated')
-                       for f in outputs.get(key, [])]
+    report['files'] = [f['filename'] for value in outputs.values()
+                       if isinstance(value, list)
+                       for f in value if isinstance(f, dict)
+                       and 'filename' in f]
     return report
 
 

@@ -3,8 +3,8 @@
 # Manage Ahead-of-Time (AOT) compiled kernels
 try:
     import fcntl
-except ImportError:  # veda: Windows has no fcntl; the opt-in
-    fcntl = None  # persistent JIT cache then runs without file locks
+except ImportError:  # veda: no fcntl on Windows; the
+    fcntl = None  # JIT cache runs without file locks
 import hashlib
 import os
 import pickle

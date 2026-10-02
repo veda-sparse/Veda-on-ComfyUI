@@ -16,7 +16,7 @@ from cutlass.cute.nvgpu import cpasync, tcgen05
 import cutlass.utils.blackwell_helpers as sm100_utils_basic
 from cutlass.pipeline import PipelineAsync
 
-from quack import layout_utils
+from ..quack import layout_utils
 from . import utils
 from .cute_dsl_utils import assume_tensor_aligned
 from . import copy_utils
@@ -25,7 +25,7 @@ from .blackwell_helpers import gemm_w_idx, gemm_ptx_w_idx  # noqa
 from .mask import AttentionMask
 from .seqlen_info import SeqlenInfoQK
 from .block_info import BlockInfo
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .tile_scheduler import (
     TileSchedulerArguments,
     SingleTileScheduler,

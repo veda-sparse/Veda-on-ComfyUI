@@ -11,9 +11,9 @@ import cutlass
 import cutlass.cute as cute
 from cutlass import Float32, Boolean
 
-from quack import layout_utils
+from ..quack import layout_utils
 from . import utils as utils
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .seqlen_info import SeqlenInfoQK
 from .utils import AuxData
 

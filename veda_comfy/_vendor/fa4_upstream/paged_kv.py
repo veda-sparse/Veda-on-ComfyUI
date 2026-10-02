@@ -9,7 +9,7 @@ from cutlass.cute.nvgpu import cpasync
 from cutlass import Int32, const_expr
 
 from . import utils
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from cutlass.cute import FastDivmodDivisorV2
 
 import math

@@ -24,11 +24,11 @@ import cutlass.cute as cute
 from cutlass import Float32, const_expr
 from cutlass.cutlass_dsl import Arch, BaseDSL
 
-from quack import copy_utils, layout_utils
+from ..quack import copy_utils, layout_utils
 
 from . import utils
 from .seqlen_info import SeqlenInfo
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .tile_scheduler import (
     SingleTileScheduler,
     SingleTileVarlenScheduler,

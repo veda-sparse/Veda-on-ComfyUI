@@ -33,7 +33,7 @@ from cutlass.utils import ClcDynamicPersistentTileScheduler
 from cutlass.base_dsl.arch import Arch
 from cutlass.cutlass_dsl import BaseDSL
 
-from quack import copy_utils, layout_utils
+from ..quack import copy_utils, layout_utils
 
 from .paged_kv import PagedKVManager
 from .cute_dsl_utils import assume_tensor_aligned
@@ -61,7 +61,7 @@ from . import mma_sm100_desc as sm100_desc
 from . import blackwell_helpers as sm100_utils
 from .named_barrier import NamedBarrierFwdSm100
 from cutlass.cute import FastDivmodDivisorV2
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .tile_scheduler import (
     SchedulerState,
     SchedulingMode,

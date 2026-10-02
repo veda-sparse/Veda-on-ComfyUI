@@ -16,7 +16,7 @@ from cutlass.cute.nvgpu import cpasync, tcgen05
 import cutlass.utils.blackwell_helpers as sm100_utils
 from cutlass.utils import ClcDynamicPersistentTileScheduler
 
-from quack import copy_utils, layout_utils
+from ..quack import copy_utils, layout_utils
 
 from .pack_gqa import (
     pack_gqa_layout,

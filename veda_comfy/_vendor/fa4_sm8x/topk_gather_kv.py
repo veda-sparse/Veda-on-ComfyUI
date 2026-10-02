@@ -12,7 +12,7 @@ from cutlass import Int32, Uint32, const_expr, Boolean
 
 from . import utils
 from .utils import warp_reduce
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 
 import math
 

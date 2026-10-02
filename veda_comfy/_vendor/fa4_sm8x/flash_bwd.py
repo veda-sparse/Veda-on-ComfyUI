@@ -16,7 +16,7 @@ from cutlass.cute.nvgpu import cpasync, warp
 from cutlass import Int32
 import cutlass.utils as utils_basic
 
-from quack import layout_utils
+from ..quack import layout_utils
 from . import ampere_helpers as sm80_utils
 from .cute_dsl_utils import assume_tensor_aligned
 from . import utils
@@ -24,7 +24,7 @@ from .mask import AttentionMask
 from .softmax import call_score_mod, call_score_mod_bwd
 from .seqlen_info import SeqlenInfoQK
 from .block_info import BlockInfo
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, TileSchedulerArguments
 from .block_sparsity import BlockSparseTensors
 from .utils import AuxData

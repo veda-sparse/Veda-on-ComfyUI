@@ -18,7 +18,7 @@ import torch
 import cutlass
 import cutlass.cute as cute
 from cutlass import Int32, Float32
-from quack.compile_utils import make_fake_tensor as fake_tensor
+from ..quack.compile_utils import make_fake_tensor as fake_tensor
 from .cache_utils import get_jit_cache
 from .testing import is_fake_mode
 

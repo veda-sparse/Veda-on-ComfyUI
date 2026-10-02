@@ -26,7 +26,7 @@ from cutlass.cutlass_dsl import (
 )
 from cutlass.utils.hardware_info import HardwareInfo
 
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 
 from . import utils as utils
 from .fast_math import clz

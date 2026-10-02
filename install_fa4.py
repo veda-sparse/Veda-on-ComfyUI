@@ -101,10 +101,14 @@ def main() -> None:
     parser.add_argument('--check', action='store_true',
                         help='only run the backend self-tests')
     args = parser.parse_args()
-    if not args.check:
-        install()
-    print('\nBackend self-tests:', flush=True)
-    sys.exit(check())
+    if args.check:
+        print('\nBackend self-tests:', flush=True)
+        sys.exit(check())
+    install()
+    # A fresh interpreter: packages installed a moment ago are not visible
+    # to this one's import system (cached directory listings).
+    sys.exit(subprocess.call([sys.executable, os.path.abspath(__file__),
+                              '--check']))
 
 
 if __name__ == '__main__':

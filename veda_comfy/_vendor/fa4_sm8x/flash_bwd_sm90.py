@@ -14,10 +14,10 @@ from cutlass.cute import FastDivmodDivisorV2
 from cutlass import Float32, Int32, Boolean, const_expr
 from cutlass.utils import LayoutEnum
 
-from quack import copy_utils
-from quack import layout_utils
-from quack import sm90_utils
-from quack.sm90_utils import gemm_zero_init, gemm_w_idx
+from ..quack import copy_utils
+from ..quack import layout_utils
+from ..quack import sm90_utils
+from ..quack.sm90_utils import gemm_zero_init, gemm_w_idx
 
 from .cute_dsl_utils import assume_tensor_aligned
 from . import utils
@@ -25,7 +25,7 @@ from .mask import AttentionMask
 from .seqlen_info import SeqlenInfoQK
 from .block_info import BlockInfo
 from . import pipeline
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .tile_scheduler import (
     TileSchedulerArguments,
     SingleTileScheduler,

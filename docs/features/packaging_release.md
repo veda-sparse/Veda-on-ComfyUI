@@ -14,7 +14,8 @@
   - NVIDIA：安装 `requirements-fa4.txt`，用 constraint 把 torch 锁在当前版本（绝不替换用户的
     CUDA 版 torch）；torch 是 CUDA 13 构建时（如 DGX Spark）换成 `nvidia-cutlass-dsl[cu13]`；
   - Apple silicon：安装 `mlx`；
-  - 最后对每块 GPU 跑后端自检并打印选中的 kernel（`--check` 只自检）。
+  - 最后在**新的子进程**里对每块 GPU 跑后端自检并打印选中的 kernel（`--check` 只自检）。
+    同一个进程里刚装的包可能 import 不到（目录缓存），Windows 真机上踩过。
   - pip 不可用时退回 `uv pip install --python <当前 python>`。
 - **install_fa4.bat** 按顺序找：便携版 `..\..\..\python_embeded\python.exe`、桌面版 / venv 的
   `..\..\.venv\Scripts\python.exe`、`..\..\venv\Scripts\python.exe`，最后 `python`；也可以把

@@ -14,7 +14,7 @@ import cutlass.cute as cute
 from cutlass.cute.nvgpu import cpasync
 from cutlass import Float32, Int32, Boolean, const_expr
 
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 
 from . import utils
 from .cute_dsl_utils import assume_tensor_aligned

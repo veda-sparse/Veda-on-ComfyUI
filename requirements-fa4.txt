@@ -1,11 +1,11 @@
 # Optional FlashAttention-4 kernel runtime for Veda on NVIDIA GPUs (Linux,
-# Windows; x86_64 and aarch64). FA4 itself is vendored in
-# veda_comfy/_vendor; these are its compiled dependencies. Install with
+# Windows; x86_64 and aarch64). FA4 and QuACK themselves are vendored in
+# veda_comfy/_vendor; these are their compiled dependencies. Install with
 # install_fa4.py (it pins torch to the installed version and switches to
 # the CUDA 13 build of the CuTe DSL when torch is built for CUDA 13).
-# The versions are the ones the vendored FA4 4.0.0b32 is validated with.
+# The versions are the ones the vendored FA4 4.0.0b32 / QuACK 0.6.5 are
+# validated with.
 nvidia-cutlass-dsl==4.8.0
-quack-kernels==0.6.5
 apache-tvm-ffi>=0.1.12,<0.2
 torch-c-dlpack-ext
 einops

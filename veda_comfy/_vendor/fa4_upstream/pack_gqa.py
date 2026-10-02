@@ -10,7 +10,7 @@ import cutlass.cute as cute
 from cutlass.cute.nvgpu import cpasync
 
 
-from quack import layout_utils
+from ..quack import layout_utils
 from . import utils as utils
 
 

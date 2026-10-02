@@ -17,16 +17,16 @@ from cutlass.cute.nvgpu import cpasync, warp, warpgroup
 from cutlass import Float32, const_expr
 from cutlass.utils import LayoutEnum
 
-from quack import copy_utils
-from quack import layout_utils
-from quack import sm90_utils
+from ..quack import copy_utils
+from ..quack import layout_utils
+from ..quack import sm90_utils
 
 from . import utils
 from .cute_dsl_utils import assume_tensor_aligned
 from . import ampere_helpers as sm80_utils
 from .seqlen_info import SeqlenInfoQK
 import cutlass.cute.nvgpu.tcgen05 as tcgen05
-from quack.cute_dsl_utils import ParamsBase
+from ..quack.cute_dsl_utils import ParamsBase
 from .tile_scheduler import (
     SingleTileScheduler,
     SingleTileVarlenScheduler,

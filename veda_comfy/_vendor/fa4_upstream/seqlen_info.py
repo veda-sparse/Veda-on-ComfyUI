@@ -7,7 +7,7 @@ import cutlass
 import cutlass.cute as cute
 from cutlass import Int32, const_expr
 
-from quack import copy_utils
+from ..quack import copy_utils
 
 """
 This consolidates all the info related to sequence length. This is so that we can do all

@@ -11,7 +11,7 @@ import cutlass.cute as cute
 from cutlass import Float32, Int32, Uint32, const_expr
 from cutlass.cutlass_dsl import min as dsl_min
 
-from quack import layout_utils
+from ..quack import layout_utils
 from . import utils as utils
 from .block_info import BlockInfo
 from .seqlen_info import SeqlenInfoQK

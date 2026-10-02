@@ -66,6 +66,18 @@ Attention computed: 10.9% of full attention (89.1% skipped)
 其他尺寸按纵横比、再按时长匹配最接近的训练方案；其他尺寸、步数以及 R2VA / FL2VA 的参考都能用，但不在训练
 分布内，建议和全注意力（旁路）对比确认。
 
+## 硬件
+
+| 硬件 | Kernel | 状态 |
+|---|---|---|
+| RTX 30 / A100 / RTX 40 / L40（sm80–89） | fa4-sm80（打过补丁的 FA4） | 见 [docs/hardware.md](docs/hardware.md) |
+| H100 / H200（sm90） | fa4-sm90 | 见 docs/hardware.md |
+| B200 / B300（sm100 / sm103） | fa4-sm100 | 见 docs/hardware.md |
+| RTX 50、RTX PRO 6000 Blackwell（sm120） | fa4-sm120 | **已验证：RTX 5070 + Windows 11**（5 秒 16:9 T2VA，每步采样 2.5 倍） |
+| DGX Spark / GB10（sm121） | fa4-sm120 | 见 docs/hardware.md |
+| Apple silicon（M 系列） | mlx / torch | 已验证（M3 Pro） |
+| 其他 NVIDIA 显卡 | flex / torch | 通用 |
+
 ## 常见问题
 
 * **会改变 LoRA 风格吗？** 不会，Veda 只决定算哪些注意力块，权重（和 LoRA）不动。

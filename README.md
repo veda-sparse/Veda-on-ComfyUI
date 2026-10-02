@@ -95,7 +95,7 @@ so check the result against full attention (bypass).
 | RTX 30 / A100 / RTX 40 / L40 (sm80-89) | fa4-sm80 (patched FA4) | see [docs/hardware.md](docs/hardware.md) |
 | H100 / H200 (sm90) | fa4-sm90 | see [docs/hardware.md](docs/hardware.md) |
 | B200 / B300 (sm100 / sm103) | fa4-sm100 | see [docs/hardware.md](docs/hardware.md) |
-| RTX 50, RTX PRO 6000 Blackwell (sm120) | fa4-sm120 | see [docs/hardware.md](docs/hardware.md) |
+| RTX 50, RTX PRO 6000 Blackwell (sm120) | fa4-sm120 | **tested: RTX 5070, Windows 11** (2.5x per sampling step, 5 s 16:9 T2VA) |
 | DGX Spark / GB10 (sm121) | fa4-sm120 | see [docs/hardware.md](docs/hardware.md) |
 | Apple silicon (M series) | mlx / torch | tested (M3 Pro) |
 | any other NVIDIA GPU | flex / torch | portable |

@@ -297,6 +297,13 @@ class VedaPatch:
             if kept is not None:
                 lines.append(f'Video tiles kept: {100 * kept:.1f}% of '
                              'video x video tile pairs')
+            chunking = engine.chunking
+            if chunking.get('chunks_per_layer'):
+                free = chunking.get('free_bytes')
+                lines.append(
+                    f'Chunks: {chunking["chunks_per_layer"]} per layer, '
+                    f'{chunking["heads_per_chunk"]} heads each'
+                    + (f' ({free / 2**30:.1f} GB free)' if free else ''))
         reasons = ', '.join(f'{r} {n}' for r, n in sorted(run.calls.items())
                             if r != 'sparse')
         lines.append(f'Attention calls: {run.calls.get("sparse", 0)} sparse'

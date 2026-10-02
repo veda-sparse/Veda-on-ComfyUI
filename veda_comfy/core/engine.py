@@ -27,8 +27,13 @@ from . import selection
 from . import tiling
 
 # Bounds of one tile-ordered q / k / v / out copy of a head chunk. Four of
-# them are alive at once, plus the backend's own temporaries.
-_MIN_CHUNK_BYTES = 64 * 2**20
+# them are alive at once, plus the backend's own temporaries, so a chunk
+# takes up to 1/8 of the free memory (about half of it in total). Larger
+# chunks matter: every chunk launches ~60 small kernels, and on Windows
+# (WDDM) launch latency made 8 chunks per layer cost ~15 ms more than 2
+# (RTX 5070, 38k tokens).
+_CHUNK_SHARE = 8
+_MIN_CHUNK_BYTES = 128 * 2**20
 _MAX_CHUNK_BYTES = 1024 * 2**20
 _DEFAULT_CHUNK_BYTES = 256 * 2**20
 
@@ -123,6 +128,9 @@ class VedaEngine:
         self.device = device
         self.stats = Stats()
         self.timer = _no_timer
+        # Last call's chunking, for diagnostics: free memory, heads per
+        # chunk, chunks per layer.
+        self.chunking: dict[str, int] = {}
         self._specs = weakref.WeakKeyDictionary()
         self._tile_layouts: dict[tuple, tiling.TileLayout] = {}
         self._pinned = device.type == 'cuda'
@@ -192,7 +200,8 @@ class VedaEngine:
     def _chunk_bytes(self) -> int:
         if self.device.type == 'cuda':
             free, _ = torch.cuda.mem_get_info(self.device)
-            return int(min(max(free // 16, _MIN_CHUNK_BYTES),
+            self.chunking['free_bytes'] = free
+            return int(min(max(free // _CHUNK_SHARE, _MIN_CHUNK_BYTES),
                            _MAX_CHUNK_BYTES))
         return _DEFAULT_CHUNK_BYTES
 
@@ -227,13 +236,16 @@ class VedaEngine:
         out = q.new_empty(seq_len + 1, heads, dim)
         proj_q, proj_k = self._weights(layer)
         chunk_bytes = self._chunk_bytes()
+        chunks = 0
         for group in plan.head_groups(layer, self.device):
             layout = self._tile_layout(spec, group.shape)
             blocks = selection.column_blocks(layout, self.generated,
                                              self.reference)
             per_head = layout.num_slots * dim * q.element_size()
             step = max(1, chunk_bytes // per_head)
+            self.chunking['heads_per_chunk'] = min(step, len(group.heads))
             for heads_chunk in group.heads.split(step):
+                chunks += 1
                 with timer('gather'):
                     q_t = tiling.gather_tiles(q, layout, heads_chunk)
                     k_t = tiling.gather_tiles(k, layout, heads_chunk)
@@ -255,5 +267,6 @@ class VedaEngine:
                 del q_t, k_t, v_t, mask
                 with timer('scatter'):
                     tiling.scatter_tiles_(out, o_t, layout, heads_chunk)
+        self.chunking['chunks_per_layer'] = chunks
         out = out[:seq_len]
         return out if out.dtype == dtype else out.to(dtype)

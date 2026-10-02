@@ -97,6 +97,10 @@ def main() -> None:
     plan = bundle.plans.select(grid).plan
     q, k, v = (torch.randn(seq_len, HEADS, DIM, device=device,
                            dtype=torch.bfloat16) for _ in range(3))
+    start = time.perf_counter()
+    engine.attention(q, k, v, 0, spec, plan)
+    _sync(device)
+    first_ms = (time.perf_counter() - start) * 1000.0
     dense_ms = _time(lambda: F.scaled_dot_product_attention(
         q.transpose(0, 1)[None], k.transpose(0, 1)[None],
         v.transpose(0, 1)[None]), device, args.repeat)
@@ -107,6 +111,7 @@ def main() -> None:
     print(f'  full attention (SDPA): {dense_ms:8.1f} ms / layer')
     print(f'  Veda ({resolution.backend.display}): {veda_ms:8.1f} ms / '
           f'layer -> {dense_ms / veda_ms:.2f}x')
+    print(f'  first Veda call (kernel compile): {first_ms / 1000.0:.1f} s')
     print(f'  attention computed: {100 * engine.stats.compute_fraction():.1f}%'
           ' of full attention')
     if args.profile:

@@ -40,7 +40,8 @@ def write_bundle(path, num_layers, num_heads, plans, head_dim=128,
             weights[key] = w
             if dtype == 'float8_e4m3fn':
                 amax = w.abs().amax(dim=(1, 2))
-                scale = (amax / 448.0).clamp(min=torch.finfo(torch.float32).tiny)
+                tiny = torch.finfo(torch.float32).tiny
+                scale = (amax / 448.0).clamp(min=tiny)
                 tensors[key] = (w / scale.view(-1, 1, 1)).to(
                     torch.float8_e4m3fn)
                 tensors[key + '.__scale'] = scale

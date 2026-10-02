@@ -92,7 +92,8 @@ def describe(layout) -> LayoutSpec:
         _, latent_t, latent_h, latent_w, _ = layout.signature
         seq_len = int(layout.seq_len)
     except (AttributeError, TypeError, ValueError) as error:
-        raise LayoutError(f'not a MiniMax-H3 packed layout ({error})') from error
+        raise LayoutError(
+            f'not a MiniMax-H3 packed layout ({error})') from error
     video = [(a, b) for a, b, kind in segments if kind == 'video']
     if len(video) != 1:
         raise LayoutError(f'expected one target video segment, '

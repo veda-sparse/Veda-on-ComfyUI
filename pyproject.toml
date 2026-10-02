@@ -35,3 +35,6 @@ testpaths = ["tests/unit"]
 [tool.ruff]
 line-length = 80
 extend-exclude = ["veda_comfy/_vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

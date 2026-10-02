@@ -129,7 +129,8 @@ def _insert_dict_links(graph: dict, guider_type: str, new_id: int,
     nodes = {n['id']: n for n in graph['nodes']}
     guider = next(n for n in graph['nodes'] if n['type'] == guider_type)
     model_in = next(i for i in guider['inputs'] if i['name'] == 'model')
-    old = next(l for l in graph['links'] if l['id'] == model_in['link'])
+    old = next(link for link in graph['links']
+               if link['id'] == model_in['link'])
     source = nodes[old['origin_id']]
     # source -> veda (new link), veda -> guider (the old link, re-origined)
     graph['links'].append({'id': link_id, 'origin_id': source['id'],
@@ -148,7 +149,8 @@ def _insert_list_links(graph: dict, guider_type: str, new_id: int,
     nodes = {n['id']: n for n in graph['nodes']}
     guider = next(n for n in graph['nodes'] if n['type'] == guider_type)
     model_in = next(i for i in guider['inputs'] if i['name'] == 'model')
-    old = next(l for l in graph['links'] if l[0] == model_in['link'])
+    old = next(link for link in graph['links']
+               if link[0] == model_in['link'])
     source = nodes[old[1]]
     graph['links'].append([link_id, source['id'], old[2], new_id, 0,
                            'MODEL'])

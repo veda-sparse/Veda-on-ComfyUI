@@ -58,6 +58,11 @@ class DeviceInfo:
     cuda: str | None
 
     @property
+    def short_name(self) -> str:
+        """Marketing name without the vendor prefix, e.g. 'RTX 5070'."""
+        return self.name.replace('NVIDIA ', '').replace('GeForce ', '')
+
+    @property
     def label(self) -> str:
         if self.kind == 'cuda':
             short = self.name.replace('NVIDIA ', '').replace('GeForce ', '')

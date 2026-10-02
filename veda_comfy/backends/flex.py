@@ -89,7 +89,7 @@ class FlexBackend(base.Backend):
         return out[0].permute(1, 0, 2)
 
     def warmup_note(self) -> str:
-        return 'compiling FlexAttention kernels (first run only, ~1 min)'
+        return 'compiling kernels for this GPU (first run only, ~1 min)'
 
 
 def create(info) -> base.Backend:

@@ -215,7 +215,7 @@ class VedaSparseAttention(io.ComfyNode):
         probe = backends.probe(device, backend)
         usable = [display for _, display, error in probe if error is None]
         lines = [f'Veda ready · {usable[0] if usable else "full attention"}'
-                 f' on {info.label}',
+                 f' · {info.short_name}',
                  f'Sparsity: {settings.describe()}']
         full = settings.describe_full_attention()
         if full:

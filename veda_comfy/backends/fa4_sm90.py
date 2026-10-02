@@ -96,7 +96,7 @@ class Fa4Sm90Backend(base.Backend):
         return out[0]
 
     def warmup_note(self) -> str:
-        return 'compiling FA4 kernels for this GPU (first run only)'
+        return 'compiling kernels for this GPU (first run only, ~10 s)'
 
 
 def create(info) -> base.Backend:

@@ -35,8 +35,34 @@ PROMPT = (
     'pines, a distant bird call.')
 
 
+R2VA_PROMPT = (
+    'Cinematic live-action: the scene from <Picture 1> slowly comes to life, '
+    'the camera pushes in gently, soft natural light shifts across the '
+    'frame, leaves move in a light breeze. Audio: calm ambient wind and '
+    'distant birds.')
+
+
+def _conditioning(args) -> dict:
+    """Nodes '7' (positive, latent) and its inputs for the task."""
+    if args.task == 't2va':
+        return {'7': {'class_type': 'MiniMaxH3ImageToVideo',
+                      'inputs': {'clip': ['4', 0], 'vae': ['5', 0],
+                                 'prompt': args.prompt,
+                                 'width': args.width, 'height': args.height,
+                                 'length': args.length}}}
+    return {
+        '20': {'class_type': 'LoadImage',
+               'inputs': {'image': args.ref_image}},
+        '7': {'class_type': 'MiniMaxH3ReferenceToVideo',
+              'inputs': {'clip': ['4', 0], 'vae': ['5', 0],
+                         'audio_vae': ['6', 0], 'prompt': args.prompt,
+                         'width': args.width, 'height': args.height,
+                         'length': args.length, 'ref_image_size': 'match',
+                         'ref_images.ref_image_0': ['20', 0]}}}
+
+
 def build_graph(args, veda: bool, prefix: str) -> dict:
-    """API-format graph of the T2VA example workflow."""
+    """API-format graph of the T2VA / R2VA example workflow."""
     model = ['2', 0]
     graph = {
         '1': {'class_type': 'UNETLoader',
@@ -50,10 +76,6 @@ def build_graph(args, veda: bool, prefix: str) -> dict:
         '5': {'class_type': 'VAELoader', 'inputs': {'vae_name': args.vae}},
         '6': {'class_type': 'VAELoader',
               'inputs': {'vae_name': args.audio_vae}},
-        '7': {'class_type': 'MiniMaxH3ImageToVideo',
-              'inputs': {'clip': ['4', 0], 'vae': ['5', 0],
-                         'prompt': args.prompt, 'width': args.width,
-                         'height': args.height, 'length': args.length}},
         '8': {'class_type': 'RandomNoise',
               'inputs': {'noise_seed': args.seed}},
         '9': {'class_type': 'KSamplerSelect',
@@ -76,6 +98,7 @@ def build_graph(args, veda: bool, prefix: str) -> dict:
                'inputs': {'video': ['15', 0], 'filename_prefix': prefix,
                           'format': 'auto', 'format.codec': 'auto'}},
     }
+    graph.update(_conditioning(args))
     if veda:
         graph['3'] = {'class_type': 'VedaSparseAttention',
                       'inputs': {'model': ['2', 0],
@@ -158,16 +181,17 @@ def main() -> None:
     parser.add_argument('--height', type=int, default=768)
     parser.add_argument('--length', type=int, default=124,
                         help='frames (17k+5); 124 = 5 s')
-    parser.add_argument('--steps', type=int, default=8)
-    parser.add_argument('--prompt', default=PROMPT)
+    parser.add_argument('--task', choices=('t2va', 'r2va'), default='t2va')
+    parser.add_argument('--steps', type=int, default=None,
+                        help='default: 8 (T2VA Turbo), 4 (R2VA Turbo)')
+    parser.add_argument('--prompt', default=None)
+    parser.add_argument('--ref-image', default='example.png',
+                        help='R2VA reference image in ComfyUI/input')
     parser.add_argument('--backend', default='auto')
     parser.add_argument('--sparsity', default='90%')
     parser.add_argument('--verbose', action='store_true')
-    parser.add_argument(
-        '--unet', default='minimax_h3_fl2va_pruned_int8_convrot.safetensors')
-    parser.add_argument(
-        '--lora',
-        default='minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors')
+    parser.add_argument('--unet', default=None)
+    parser.add_argument('--lora', default=None)
     parser.add_argument(
         '--clip', default='qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors')
     parser.add_argument(
@@ -178,10 +202,19 @@ def main() -> None:
         '--predictor',
         default='minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors')
     args = parser.parse_args()
+    r2va = args.task == 'r2va'
+    args.steps = args.steps or (4 if r2va else 8)
+    args.prompt = args.prompt or (R2VA_PROMPT if r2va else PROMPT)
+    args.unet = args.unet or (
+        'minimax_h3_ref2va_pruned_int8_convrot.safetensors' if r2va
+        else 'minimax_h3_fl2va_pruned_int8_convrot.safetensors')
+    args.lora = args.lora or (
+        'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors' if r2va
+        else 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors')
     results = {}
     for mode in args.modes.split(','):
         graph = build_graph(args, mode == 'veda',
-                            f'veda_e2e/seed{args.seed}_{mode}')
+                            f'veda_e2e/{args.task}_seed{args.seed}_{mode}')
         print(f'== {mode}: queued', flush=True)
         report = asyncio.run(run(args.server, graph))
         results[mode] = report

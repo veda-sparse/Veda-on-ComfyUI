@@ -106,7 +106,7 @@ def resolve(device: torch.device, requested: str = 'auto',
                 backend = module.create(info)
                 note = backend.warmup_note()
                 if notify is not None and note:
-                    notify(f'{backend.name}: {note}')
+                    notify(f'{backend.display}: {note}')
                 base.self_test(backend, device)
             except base.BackendUnavailable as error:
                 attempts.append((name, str(error)))

@@ -17,9 +17,16 @@ if os.environ.get("CUTE_DSL_PTXAS_PATH", None) is not None:
 # Pythonic CuTe tensor indexing (`:` / `...` sugar) is installed as a side effect
 # of importing `quack.dsl`, which imports `quack.dsl.cute_tensor_indexing` and
 # monkey-patches CuTe's tensor classes process-wide.
-from .rmsnorm import rmsnorm  # noqa: E402
-from .softmax import softmax  # noqa: E402
-from .cross_entropy import cross_entropy  # noqa: E402
+
+
+def __getattr__(name):  # veda: lazy, keeps Triton optional
+    if name in ("rmsnorm", "softmax", "cross_entropy"):
+        import importlib
+        module = importlib.import_module("." + name, __name__)
+        return getattr(module, name)
+    raise AttributeError(name)
+
+
 from .rounding import RoundingMode  # noqa: E402
 
 

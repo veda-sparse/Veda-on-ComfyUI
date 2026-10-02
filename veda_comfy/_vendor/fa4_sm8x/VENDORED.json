@@ -1,6 +1,7 @@
 {
  "compat_edits": [
   "fa4/cache_utils.py",
+  "quack/__init__.py",
   "quack/cache/async_compile.py",
   "quack/cache/jit.py"
  ],

@@ -120,6 +120,19 @@ COMPAT_EDITS = [
      '    if fcntl is None:  # veda: Windows, no advisory locks\n'
      '        return False\n'
      '    try:\n        fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT)\n'),
+    # rmsnorm / softmax / cross_entropy pull QuACK's autotuner, which
+    # subclasses a Triton class at import time; Windows torch has no
+    # Triton and FA4 uses none of them, so they load on first access.
+    ('quack', '__init__.py',
+     'from quack.rmsnorm import rmsnorm  # noqa: E402\n'
+     'from quack.softmax import softmax  # noqa: E402\n'
+     'from quack.cross_entropy import cross_entropy  # noqa: E402\n',
+     '\n\ndef __getattr__(name):  # veda: lazy, keeps Triton optional\n'
+     '    if name in ("rmsnorm", "softmax", "cross_entropy"):\n'
+     '        import importlib\n'
+     '        module = importlib.import_module("." + name, __name__)\n'
+     '        return getattr(module, name)\n'
+     '    raise AttributeError(name)\n\n\n'),
     # The forkserver preload names the module by its upstream path.
     ('quack', 'cache/async_compile.py', '["quack.cache._pool_preload"]',
      '[__name__.rsplit(".", 1)[0] + "._pool_preload"]'),

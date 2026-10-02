@@ -106,3 +106,68 @@ def test_fa4_backends_explain_missing_kernels(module, cc):
 def test_fa4_backends_refuse_other_families(module, cc):
     with pytest.raises(base.BackendUnavailable, match='is for'):
         module.create(_cuda(cc))
+
+
+_LINUX_OR_OPTIONAL = ('fcntl', 'triton')
+
+
+def _module_level_imports(path):
+    """(absolute top-level names, relative (level, module, names)) imported
+    at module level outside try blocks (what an import must succeed on)."""
+    with open(path, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+    absolute, relative = set(), []
+    for node in tree.body:
+        if isinstance(node, ast.Try):
+            continue
+        for n in ast.walk(node) if isinstance(node, ast.If) else [node]:
+            if isinstance(n, ast.Import):
+                absolute.update(a.name.split('.')[0] for a in n.names)
+            elif isinstance(n, ast.ImportFrom):
+                if n.level:
+                    relative.append((n.level, n.module,
+                                     [a.name for a in n.names]))
+                else:
+                    absolute.add((n.module or '').split('.')[0])
+    return absolute, relative
+
+
+def _targets(path, level, module, names):
+    base = os.path.dirname(path)
+    for _ in range(level - 1):
+        base = os.path.dirname(base)
+    out, pkg = [], base
+    for part in (module.split('.') if module else []):
+        pkg = os.path.join(pkg, part)
+        if os.path.isfile(os.path.join(pkg, '__init__.py')):
+            out.append(os.path.join(pkg, '__init__.py'))
+    if module and os.path.isfile(pkg + '.py'):
+        out.append(pkg + '.py')
+    for name in names:
+        candidate = os.path.join(pkg, name)
+        if os.path.isfile(os.path.join(candidate, '__init__.py')):
+            out.append(os.path.join(candidate, '__init__.py'))
+        elif os.path.isfile(candidate + '.py'):
+            out.append(candidate + '.py')
+    return out
+
+
+@pytest.mark.parametrize('copy', COPIES)
+def test_fa4_import_closure_needs_no_linux_only_modules(copy):
+    """Importing a vendored FA4 copy must not need fcntl (absent on
+    Windows) or Triton (absent from Windows torch) at module level."""
+    seen, stack, offenders = set(), [os.path.join(VENDOR, copy,
+                                                  '__init__.py')], {}
+    while stack:
+        path = stack.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        absolute, relative = _module_level_imports(path)
+        bad = absolute & set(_LINUX_OR_OPTIONAL)
+        if bad:
+            offenders[os.path.relpath(path, VENDOR)] = sorted(bad)
+        for level, module, names in relative:
+            stack.extend(_targets(path, level, module, names))
+    assert any('quack' in p for p in seen)
+    assert not offenders, offenders

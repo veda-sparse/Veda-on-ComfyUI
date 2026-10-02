@@ -73,6 +73,7 @@ class Fa4Sm90Backend(base.Backend):
     """Upstream FA4 Hopper kernels with full / partial block lists."""
 
     name = 'fa4-sm90'
+    display = 'FA4 (SM90)'
 
     def attend(self, q, k, v, block_mask, layout):
         _, _, block_sparsity, interface, _ = _modules()

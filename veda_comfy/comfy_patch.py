@@ -15,7 +15,9 @@ exactly that call through `transformer_options["optimized_attention_override"]`:
 
 The override is re-installed on every step (ON_PREPARE_STATE), like
 ComfyUI's own sparse attention node, so a node applied later cannot
-silently replace it.
+silently replace it. Node text: a few readable lines (kernel, video and
+plan, sparsity, share of full attention computed); `verbose` adds timing
+and call diagnostics.
 """
 
 from __future__ import annotations
@@ -29,24 +31,39 @@ import torch
 
 import comfy.patcher_extension
 
-try:  # ComfyUI with the comfy-aimdo allocation graph (0.38+)
-    from comfy.model_prefetch import pause_malloc_graph as _pause_malloc_graph
-except ImportError:  # older ComfyUI: nothing to pause
-    _pause_malloc_graph = contextlib.nullcontext
-
 from . import backends
 from . import settings as veda_settings
 from . import status as veda_status
 from .core import engine as veda_engine
 from .core import h3_layout
+from .core import plans as veda_plans
+
+try:  # ComfyUI with the comfy-aimdo allocation graph (0.38+)
+    from comfy.model_prefetch import pause_malloc_graph as _pause_malloc_graph
+except ImportError:  # older ComfyUI: nothing to pause
+    _pause_malloc_graph = contextlib.nullcontext
 
 _KEY = 'veda_sparse_attention'
+_TIMED_PHASES = (('gather', 'gather'), ('score', 'score'),
+                 ('select', 'select'), ('attend', 'kernel'),
+                 ('scatter', 'scatter'))
 
 
 def _is_interrupt(error: BaseException) -> bool:
     # comfy.model_management.InterruptProcessingException, without importing
     # it at module scope.
     return type(error).__name__ == 'InterruptProcessingException'
+
+
+class _Run:
+    """Per sampling run: what happened, for the summary on the node."""
+
+    def __init__(self):
+        self.calls = collections.Counter()
+        self.evaluations = 0          # model calls (layer 0 reached)
+        self.video = None             # e.g. '1344x768 · 5.2 s'
+        self.failed = None            # error text if the sparse path failed
+        self.announced: set = set()
 
 
 class VedaPatch:
@@ -59,11 +76,13 @@ class VedaPatch:
         self.status = veda_status.NodeStatus(node_id)
         self.installed: set = set()
         self._engines: dict[str, veda_engine.VedaEngine | None] = {}
-        self._resolutions: dict[str, backends.Resolution] = {}
+        self._timers: dict[str, veda_engine.PhaseTimer] = {}
         self._steps = weakref.WeakKeyDictionary()
-        self._announced: set = set()
-        self._failed = False
-        self.calls = collections.Counter()
+        self.run = _Run()
+
+    @property
+    def calls(self) -> collections.Counter:
+        return self.run.calls
 
     # -- per device ------------------------------------------------------
 
@@ -72,17 +91,24 @@ class VedaPatch:
         if key not in self._engines:
             resolution = backends.resolve(
                 device, self.settings.backend,
-                notify=lambda text: self.status.show(f'⏳ {text}'))
-            self._resolutions[key] = resolution
+                notify=lambda text: self.status.show(f'⏳ Veda: {text}'))
             if resolution.backend is None:
                 self.status.warn(
-                    f'⚠ no sparse kernel works on {resolution.device.label}, '
-                    f'running full attention ({resolution.report()})')
+                    f'⚠ Veda off: no sparse kernel works on '
+                    f'{resolution.device.label}; using full attention\n'
+                    f'{resolution.report()}')
                 self._engines[key] = None
             else:
-                self._engines[key] = veda_engine.VedaEngine(
-                    self.bundle, self.settings.current, self.settings.history,
-                    resolution.backend, device)
+                engine = veda_engine.VedaEngine(
+                    self.bundle, self.settings.generated,
+                    self.settings.reference, resolution.backend, device)
+                if self.settings.verbose:
+                    timer = engine.enable_timing()
+                    if timer is not None:
+                        self._timers[key] = timer
+                    logging.info('Veda: backends on %s: %s',
+                                 resolution.device.label, resolution.report())
+                self._engines[key] = engine
         return self._engines[key]
 
     def _step(self, transformer_options) -> int | None:
@@ -112,7 +138,7 @@ class VedaPatch:
                      skip_reshape=False, skip_output_reshape=False,
                      **kwargs):
             def dense(reason: str):
-                patch.calls[reason] += 1
+                patch.run.calls[reason] += 1
                 kw = dict(mask=mask, attn_precision=attn_precision,
                           skip_reshape=skip_reshape,
                           skip_output_reshape=skip_output_reshape, **kwargs)
@@ -127,20 +153,23 @@ class VedaPatch:
                     or q.shape != v.shape or layout is None
                     or getattr(layout, 'seq_len', None) != q.shape[2]):
                 return dense('other attention')
+            if options.get('block_index') == 0:
+                patch.run.evaluations += 1
             reason = patch._dense_reason(q, options)
             if reason is not None:
                 return dense(reason)
             try:
-                return patch._sparse(q, k, v, layout, options,
-                                     skip_output_reshape, dense)
+                with _pause_malloc_graph():
+                    return patch._sparse(q, k, v, layout, options,
+                                         skip_output_reshape, dense)
             except Exception as error:  # never lose the user's render
                 if _is_interrupt(error):
                     raise
-                patch._failed = True
+                patch.run.failed = f'{type(error).__name__}: {error}'
                 logging.error('Veda: sparse attention failed', exc_info=True)
-                patch.status.warn(f'⚠ sparse attention failed '
-                                  f'({type(error).__name__}: {error}); '
-                                  'finishing this run with full attention')
+                patch.status.warn(
+                    '⚠ Veda hit an error and finishes this run with full '
+                    f'attention:\n{patch.run.failed}')
                 return dense('error')
 
         return override
@@ -148,24 +177,24 @@ class VedaPatch:
     def _dense_reason(self, q, options) -> str | None:
         """Why this H3 call runs full attention, or None to go sparse."""
         s, bundle = self.settings, self.bundle
-        if self._failed:
+        if self.run.failed:
             return 'error'
         layer = options.get('block_index')
         if not isinstance(layer, int) or layer >= bundle.num_layers:
             return 'layer outside the predictor'
         if q.shape[1] != bundle.num_heads or q.shape[3] != bundle.head_dim:
             self._announce(('shape', tuple(q.shape)),
-                           f'⚠ model has {q.shape[1]} heads of dim '
-                           f'{q.shape[3]}, the predictor expects '
-                           f'{bundle.num_heads} x {bundle.head_dim}: running '
-                           'full attention', warn=True)
+                           f'⚠ Veda off: the model has {q.shape[1]} heads of '
+                           f'dim {q.shape[3]}, the predictor expects '
+                           f'{bundle.num_heads} x {bundle.head_dim}',
+                           warn=True)
             return 'head mismatch'
         if layer in s.dense_layers:
             return 'full-attention layer'
         if s.dense_steps and self._step(options) in s.dense_steps:
             return 'full-attention step'
-        if s.current.keeps_all and s.history.keeps_all:
-            return 'sparsity 0'
+        if s.generated.keeps_all and s.reference.keeps_all:
+            return 'sparsity 0%'
         return None
 
     def _sparse(self, q, k, v, layout, options, skip_output_reshape, dense):
@@ -173,15 +202,9 @@ class VedaPatch:
         # (comfy-aimdo) and expects everything allocated inside a block to
         # be gone by its end. Veda keeps device state across calls (tile
         # layouts, plan head groups, statistics) and its kernels allocate
-        # their own workspaces, so the whole sparse path runs with the
-        # graph paused, like ComfyUI's own sparse attention node does for
-        # its persistent state. Otherwise the process aborts natively.
-        with _pause_malloc_graph():
-            return self._sparse_unpaused(q, k, v, layout, options,
-                                         skip_output_reshape, dense)
-
-    def _sparse_unpaused(self, q, k, v, layout, options,
-                         skip_output_reshape, dense):
+        # their own workspaces, so the caller runs this with the graph
+        # paused, like ComfyUI's own sparse attention node does for its
+        # persistent state. Otherwise the process aborts natively.
         engine = self._engine(q.device)
         if engine is None:
             return dense('no sparse kernel')
@@ -189,41 +212,102 @@ class VedaPatch:
             spec = engine.layout_spec(layout)
         except h3_layout.LayoutError as error:
             self._announce(('layout', str(error)),
-                           f'⚠ cannot read this H3 layout ({error}): '
-                           'running full attention', warn=True)
+                           f'⚠ Veda off for this video: cannot read the H3 '
+                           f'layout ({error})', warn=True)
             return dense('layout')
         choice = engine.plan_for(spec)
-        if not choice.exact and self.settings.untrained_geometry == 'dense':
-            self._announce(('plan', spec.target.grid),
-                           f'⚠ untrained size ({choice.how}): running full '
-                           'attention as configured', warn=True)
-            return dense('untrained size')
-        self._announce(('plan', spec.target.grid), self._active_text(
-            engine, spec, choice), warn=not choice.exact)
+        self.run.video = veda_plans.describe_grid(spec.target.grid)
+        self._announce(('plan', spec.target.grid),
+                       self._running_text(engine, spec, choice),
+                       warn=not choice.exact)
         batch, heads, seq_len, dim = q.shape
         out = engine.attention(q[0].transpose(0, 1), k[0].transpose(0, 1),
                                v[0].transpose(0, 1), options['block_index'],
                                spec, choice.plan)
-        self.calls['sparse'] += 1
+        self.run.calls['sparse'] += 1
         if skip_output_reshape:
             return out.transpose(0, 1).unsqueeze(0)
         return out.reshape(batch, seq_len, heads * dim)
 
-    def _active_text(self, engine, spec, choice) -> str:
-        grid = spec.target.grid
-        size = f'{grid[2] * 32}x{grid[1] * 32}, {grid[0]} latent frames'
-        history = ''
-        if spec.history:
-            history = (' · history tiled' if not self.settings.history.keeps_all
-                       else ' · history full attention')
-        mark = '⚡' if choice.exact else '⚠'
-        return (f'{mark} Veda on {engine.backend.name} · {size} · '
-                f'{choice.how}{history} · {self.settings.describe()}')
+    # -- node text ---------------------------------------------------------
+
+    def _running_text(self, engine, spec, choice) -> str:
+        lines = [f'⚡ Veda running · {engine.backend.display}',
+                 f'Video: {veda_plans.describe_grid(spec.target.grid)}',
+                 'Tile plan: ' + (choice.how if choice.exact
+                                  else f'⚠ {choice.how}')]
+        sparsity = self.settings.describe()
+        if spec.references and self.settings.reference.keeps_all:
+            sparsity += ' (references use full attention)'
+        lines.append(f'Sparsity: {sparsity}')
+        full = self.settings.describe_full_attention()
+        if full:
+            lines.append(f'Full attention: {full}')
+        if self.settings.verbose and spec.skipped:
+            lines.append('Untiled references: ' + '; '.join(spec.skipped))
+        return '\n'.join(lines)
+
+    def _summary(self) -> str | None:
+        run = self.run
+        engines = [e for e in self._engines.values() if e is not None]
+        sparse = run.calls.get('sparse', 0)
+        full = sum(n for r, n in run.calls.items()
+                   if r not in ('sparse', 'other attention'))
+        if not sparse and not full:
+            return None
+        backend = engines[0].backend.display if engines else 'full attention'
+        mark = '✅' if sparse and not run.failed else '⚠'
+        lines = [f'{mark} Veda done · {backend}']
+        if run.video:
+            lines.append(f'Video: {run.video}')
+        work = [e.stats.compute_fraction() for e in engines]
+        work = [w for w in work if w is not None]
+        if work:
+            share = sum(work) / len(work)
+            if full:  # dense calls do all of their work
+                share = (share * sparse + full) / (sparse + full)
+            lines.append(f'Attention computed: {100 * share:.1f}% of full '
+                         f'attention ({100 * (1 - share):.1f}% skipped)')
+        configured = self.settings.describe_full_attention()
+        if configured:
+            lines.append(f'Full attention: {configured}')
+        if run.failed:
+            lines.append(f'Fell back to full attention after: {run.failed}')
+        if self.settings.verbose:
+            lines += self._diagnostics(engines)
+        return '\n'.join(lines)
+
+    def _diagnostics(self, engines) -> list[str]:
+        run, lines = self.run, ['— diagnostics —']
+        for key, timer in self._timers.items():
+            phases = timer.summary()
+            total = sum(phases.values()) / 1000.0
+            if not total:
+                continue
+            per_eval = total / max(1, run.evaluations)
+            lines.append(f'Veda attention time: {total:.2f} s '
+                         f'({per_eval:.2f} s per model call x '
+                         f'{run.evaluations})')
+            lines.append('  ' + ' · '.join(
+                f'{label} {phases.get(name, 0.0) / 1000.0:.2f} s'
+                for name, label in _TIMED_PHASES))
+            self._timers[key] = self._engines[key].enable_timing()
+        for engine in engines:
+            kept = engine.stats.kept_fraction()
+            if kept is not None:
+                lines.append(f'Video tiles kept: {100 * kept:.1f}% of '
+                             'video x video tile pairs')
+        reasons = ', '.join(f'{r} {n}' for r, n in sorted(run.calls.items())
+                            if r != 'sparse')
+        lines.append(f'Attention calls: {run.calls.get("sparse", 0)} sparse'
+                     + (f'; full attention: {reasons}' if reasons else ''))
+        lines.append(f'Predictor: {self.bundle.describe()}')
+        return lines
 
     def _announce(self, key, text: str, warn: bool = False) -> None:
-        if key in self._announced:
+        if key in self.run.announced:
             return
-        self._announced.add(key)
+        self.run.announced.add(key)
         (self.status.warn if warn else self.status.show)(text)
 
     # -- lifecycle ---------------------------------------------------------
@@ -239,31 +323,14 @@ class VedaPatch:
         transformer_options['optimized_attention_override'] = override
 
     def on_cleanup(self) -> None:
-        """End of a sampling run: report, then reset per-run state."""
-        sparse = self.calls.get('sparse', 0)
-        if sparse or self.calls:
-            engines = [e for e in self._engines.values() if e is not None]
-            kept = [e.stats.kept_fraction() for e in engines]
-            kept = [x for x in kept if x is not None]
-            dense_total = sum(n for r, n in self.calls.items()
-                              if r not in ('sparse', 'other attention'))
-            parts = [f'{sparse} sparse / {dense_total} full-attention calls']
-            if kept:
-                parts.append(f'kept {100.0 * sum(kept) / len(kept):.1f}% of '
-                             'video key tiles')
-            if engines:
-                parts.append(engines[0].backend.name)
-            if self._failed:
-                parts.append('fell back to full attention after an error')
-            self.status.show(('✅ ' if sparse and not self._failed else '⚠ ')
-                             + 'Veda last run: ' + ' · '.join(parts))
-            if self.settings.verbose:
-                logging.info('Veda: call breakdown %s', dict(self.calls))
-            for engine in engines:
+        """End of a sampling run: show the summary, reset per-run state."""
+        summary = self._summary()
+        if summary:
+            self.status.show(summary)
+        for engine in self._engines.values():
+            if engine is not None:
                 engine.stats = veda_engine.Stats()
-        self.calls.clear()
-        self._announced.clear()
-        self._failed = False
+        self.run = _Run()
 
 
 def apply(model, bundle, settings: veda_settings.VedaSettings,

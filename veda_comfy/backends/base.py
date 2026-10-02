@@ -33,11 +33,13 @@ class Backend(abc.ABC):
     """Block-sparse attention on tile-ordered tensors.
 
     Attributes:
-        name: Stable id shown in the UI and logs, e.g. 'fa4-sm89'.
+        name: Stable id used in logs and settings, e.g. 'fa4-sm89'.
+        display: Name shown on the node, e.g. 'FA4 (SM89)'.
         dtypes: Input dtypes the kernel takes natively; others are cast.
     """
 
     name: str = 'backend'
+    display: str = 'backend'
     dtypes: tuple[torch.dtype, ...] = (torch.bfloat16, torch.float16)
 
     @abc.abstractmethod

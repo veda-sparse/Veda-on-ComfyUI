@@ -40,12 +40,14 @@ guider / 采样器之前。对比效果：选中节点按 **Ctrl+B**（旁路）
 ## 节点上显示什么
 
 ```
-Ready · RTX 4090 (sm89) · kernel fa4-sm89 · current 90% sparse · history 90% sparse
-⚡ Veda on fa4-sm89 · 1344x768, 37 latent frames · trained plan 16x9_t37 · ...
-✅ Veda last run: 800 sparse / 0 full-attention calls · kept 10.0% of video key tiles · fa4-sm89
+✅ Veda done · FA4 (SM120)
+Video: 1344x768 · 5.2 s
+Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
-⚠ 开头的行表示回退了或者超出了训练范围（少见的尺寸、缺 kernel 等），后面写着原因。
+采样前显示将用的 kernel 和稀疏度；采样中显示视频尺寸和匹配到的训练方案；运行结束显示实际算了多少比例的
+全注意力。⚠ 开头的行表示回退了或者超出了训练范围（少见的尺寸、缺 kernel 等），后面写着原因。打开
+`verbose` 会额外显示各阶段耗时、注意力调用次数和打分器信息。
 
 ## 设置
 
@@ -53,15 +55,16 @@ Ready · RTX 4090 (sm89) · kernel fa4-sm89 · current 90% sparse · history 90%
 
 | 输入 | 默认 | 含义 |
 |---|---|---|
-| `current_sparsity` / `current_tiles` | 90% / 0 | 生成视频本身（current）的 key tile 每个 query tile 跳过的比例；`tiles > 0` 时改为固定保留这么多个 128-token tile。 |
-| `history_sparsity` / `history_tiles` | 90% / 0 | 条件（history）同上：首尾帧、引导帧、参考图和参考视频。0% 表示条件走全注意力。 |
+| `generated_sparsity` | `90%` | 生成视频（generated）注意力的稀疏度：`90%` 表示跳过 90% 的 key tile（训练值）；填整数如 `24` 表示每个 query tile 固定保留 24 个 128-token 的 key tile。 |
+| `reference_sparsity` | `90%` | 参考（reference）同上：首尾帧、引导帧、参考图和参考视频。`0%` 表示参考走全注意力。 |
 | `full_attention_layers` | 空 | 保持全注意力的 DiT 层，0 起，例如 `0, 1, 47-49`。 |
 | `full_attention_steps` | 空 | 保持全注意力的采样步，0 起，例如 `0`。 |
 | `backend` | auto | `fa4` / `flex` / `torch` / `mlx`；auto 选自检通过的最快那个。 |
-| `untrained_size` | sparse | 没有训练方案的尺寸：用最接近的方案，或者走全注意力。 |
+| `verbose` | 关 | 每次运行后在节点上额外显示各阶段耗时、调用次数和打分器信息。 |
 
 发布的打分器训练于 **1344x768、768x1344、768x768、1024x768，5 / 10 / 14 秒**，配 8 步 Turbo LoRA。
-其他尺寸、步数以及 R2VA / FL2VA 的条件都能用，但不在训练分布内，建议和全注意力（旁路）对比确认。
+其他尺寸按纵横比、再按时长匹配最接近的训练方案；其他尺寸、步数以及 R2VA / FL2VA 的参考都能用，但不在训练
+分布内，建议和全注意力（旁路）对比确认。
 
 ## 常见问题
 

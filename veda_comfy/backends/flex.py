@@ -53,6 +53,7 @@ class FlexBackend(base.Backend):
     """FlexAttention with a BlockMask built from the Veda block mask."""
 
     name = 'flex'
+    display = 'FlexAttention'
 
     def __init__(self):
         # One mask_mod per tile layout: a fresh closure per call would be a

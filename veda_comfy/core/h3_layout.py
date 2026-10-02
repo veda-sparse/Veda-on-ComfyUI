@@ -11,8 +11,8 @@ Miowtion's training layout. Veda needs, per video-like span, its token grid
 
   * target: the `video` segment; its grid is the latent grid after the 1x2x2
     patch, read from `layout.signature`.
-  * history: `cond` (FL2VA keyframes / AddGuide frames) and `ref_img` (R2VA
-    reference images and videos). Their grids are not in the signature, so
+  * reference: `cond` (FL2VA keyframes / AddGuide frames) and `ref_img`
+    (R2VA reference images and videos). Their grids are not in the signature, so
     they are recovered from `layout.position_ids` and the row order is
     verified against them; a segment that does not verify stays global
     (dense), which is always correct, just slower.
@@ -27,7 +27,7 @@ import dataclasses
 
 import torch
 
-_HISTORY_KINDS = ('cond', 'ref_img')
+_REFERENCE_KINDS = ('cond', 'ref_img')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,13 +46,13 @@ class LayoutSpec:
     Attributes:
         seq_len: Packed sequence length S.
         target: The target video span.
-        history: Tiled-able condition spans, in packed order.
+        references: Condition spans that can be tiled, in packed order.
         skipped: Condition segments that stay global, with the reason.
     """
 
     seq_len: int
     target: SpanSpec
-    history: tuple[SpanSpec, ...]
+    references: tuple[SpanSpec, ...]
     skipped: tuple[str, ...] = ()
 
 
@@ -103,16 +103,16 @@ def describe(layout) -> LayoutSpec:
     if grid[0] * grid[1] * grid[2] != b - a:
         raise LayoutError(f'video segment of {b - a} rows does not match the '
                           f'latent grid {grid}')
-    history, skipped = [], []
+    references, skipped = [], []
     position_ids = getattr(layout, 'position_ids', None)
     for start, stop, kind in segments:
-        if kind not in _HISTORY_KINDS:
+        if kind not in _REFERENCE_KINDS:
             continue
         span_grid = (None if position_ids is None
                      else _segment_grid(position_ids, start, stop))
         if span_grid is None:
             skipped.append(f'{kind}[{start}:{stop}] has no row-major grid')
             continue
-        history.append(SpanSpec(kind, int(start), span_grid))
+        references.append(SpanSpec(kind, int(start), span_grid))
     return LayoutSpec(seq_len=seq_len, target=SpanSpec('target', int(a), grid),
-                      history=tuple(history), skipped=tuple(skipped))
+                      references=tuple(references), skipped=tuple(skipped))

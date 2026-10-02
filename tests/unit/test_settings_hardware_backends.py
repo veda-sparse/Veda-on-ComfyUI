@@ -20,6 +20,29 @@ def test_parse_index_list(text, want):
     assert settings.parse_index_list(text, 'x') == want
 
 
+@pytest.mark.parametrize('text,ratio,tiles', [
+    ('90%', 0.1, None), (' 87.5 % ', 0.125, None), ('0%', 1.0, None),
+    ('90％', 0.1, None), ('24', None, 24.0)])
+def test_parse_sparsity(text, ratio, tiles):
+    budget = settings.parse_sparsity(text, 'x')
+    assert budget.tiles == tiles
+    if ratio is not None:
+        assert budget.ratio == pytest.approx(ratio)
+
+
+@pytest.mark.parametrize('text', ['100%', '0', '0.9', 'ninety', '', '-5%'])
+def test_parse_sparsity_explains_errors(text):
+    with pytest.raises(ValueError, match='generated_sparsity'):
+        settings.parse_sparsity(text, 'generated_sparsity')
+
+
+def test_format_budget():
+    assert settings.format_budget(settings.parse_sparsity('90%', 'x')) == (
+        '90%')
+    assert settings.format_budget(settings.parse_sparsity('24', 'x')) == (
+        '24 tiles')
+
+
 def test_parse_index_list_explains_errors():
     with pytest.raises(ValueError, match='0-based'):
         settings.parse_index_list('first', 'full_attention_steps')

@@ -57,13 +57,16 @@ prints which kernel each GPU will use.
 The text on the node tells you what is happening, e.g.
 
 ```
-Ready · RTX 4090 (sm89) · kernel fa4-sm89 · current 90% sparse · history 90% sparse
-⚡ Veda on fa4-sm89 · 1344x768, 37 latent frames · trained plan 16x9_t37 · ...
-✅ Veda last run: 800 sparse / 0 full-attention calls · kept 10.0% of video key tiles · fa4-sm89
+✅ Veda done · FA4 (SM120)
+Video: 1344x768 · 5.2 s
+Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
-A ⚠ line means Veda fell back or is outside what it was trained on (an
-unusual size, a missing kernel), with the reason.
+Before sampling it shows the kernel it will use and the sparsity; while
+sampling, the video size and which trained tile plan it matched. A ⚠ line
+means Veda fell back or is outside what it was trained on (an unusual size,
+a missing kernel), with the reason. Turn on `verbose` for timing per phase,
+attention calls and predictor details.
 
 ## Settings
 
@@ -72,17 +75,18 @@ input (click "show advanced inputs") with the trained defaults:
 
 | Input | Default | Meaning |
 |---|---|---|
-| `current_sparsity` / `current_tiles` | 90 % / 0 | Key tiles of the generated video each query tile skips; `tiles > 0` keeps exactly that many 128-token tiles instead. |
-| `history_sparsity` / `history_tiles` | 90 % / 0 | The same for conditions: first/last frames, guide frames, reference images and videos. 0 % = conditions use full attention. |
+| `generated_sparsity` | `90%` | Sparsity of the generated video's attention: `90%` skips 90% of the key tiles (the trained value). A whole number such as `24` keeps exactly that many 128-token key tiles instead. |
+| `reference_sparsity` | `90%` | The same for references: first/last frames, guide frames, reference images and videos. `0%` = references use full attention. |
 | `full_attention_layers` | empty | 0-based DiT blocks that keep full attention, e.g. `0, 1, 47-49`. |
 | `full_attention_steps` | empty | 0-based sampling steps that keep full attention, e.g. `0`. |
 | `backend` | auto | `fa4`, `flex`, `torch`, `mlx`; auto takes the fastest that passes its self-test. |
-| `untrained_size` | sparse | For sizes without a trained plan: nearest plan, or full attention. |
+| `verbose` | off | After each run, also show attention time per phase, call counts and predictor details on the node. |
 
 The released predictor was trained for **1344x768, 768x1344, 768x768 and
-1024x768 at 5 / 10 / 14 s** with the 8-step Turbo LoRA. Other sizes, step
-counts and R2VA / FL2VA conditions work but are outside its training data;
-check the result against full attention (bypass).
+1024x768 at 5 / 10 / 14 s** with the 8-step Turbo LoRA. Other sizes use the
+tile plan of the nearest aspect ratio and duration; other sizes, step
+counts and R2VA / FL2VA references work but are outside its training data,
+so check the result against full attention (bypass).
 
 ## Hardware
 

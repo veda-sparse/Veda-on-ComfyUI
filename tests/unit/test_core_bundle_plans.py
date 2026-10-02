@@ -52,15 +52,18 @@ def _table():
     ])
 
 
-def test_plan_selection_rules():
+def test_plan_selection_by_aspect_then_duration():
     table = _table()
     exact = table.select((37, 24, 42))
     assert exact.exact and exact.plan.name == '16x9_t37'
-    length = table.select((52, 24, 42))
-    assert not length.exact and length.plan.name == '16x9_t37'
-    assert 'nearest length' in length.how
-    aspect = table.select((37, 23, 40))  # 1280x736, close to 16:9
-    assert not aspect.exact and aspect.plan.name == '16x9_t37'
+    assert 'trained for this size' in exact.how
+    longer = table.select((62, 24, 42))  # nearer 72 than 37
+    assert not longer.exact and longer.plan.name == '16x9_t72'
+    assert 'nearest trained size: 1344x768 · 10.1 s' in longer.how
+    smaller = table.select((37, 15, 27))  # 864x480, still 16:9
+    assert not smaller.exact and smaller.plan.name == '16x9_t37'
+    square = table.select((72, 32, 32))
+    assert square.plan.name == '1x1_t37'
     portrait = table.select((37, 42, 24))  # only the transpose fits
     assert portrait.plan.name == '16x9_t37_T'
     assert portrait.plan.shapes[0] == tiling.TileShape(4, 8, 4)
@@ -75,4 +78,4 @@ def test_head_groups_partition_heads():
 
 
 def test_summary():
-    assert _table().summary() == '16:9, 1:1 x latent frames 37/72'
+    assert _table().summary() == '16:9, 1:1 x 5.2 / 10.1 s'

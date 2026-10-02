@@ -124,12 +124,12 @@ class TileLayout:
         perm: [N] int64 packed row of every permuted slot, -1 on padding;
             N = n_tiles * 128.
         valid_count: [n_tiles] int32 real rows per tile (a prefix).
-        n_video_tiles: Tiles of all tiled spans (history spans, then the
+        n_video_tiles: Tiles of all tiled spans (reference spans, then the
             target span).
-        n_ref_tiles: Leading tiles that belong to history spans; tiles
+        n_ref_tiles: Leading tiles that belong to reference spans; tiles
             [n_ref_tiles, n_video_tiles) belong to the target.
         n_global_tiles: Trailing tiles of global rows.
-        ref_tokens: Real rows of the history spans.
+        ref_tokens: Real rows of the reference spans.
         target_tokens: Real rows of the target span.
         seq_len: Packed length S; `scatter_index` sends padding to row S.
         gather_index: [N] perm with padding redirected to row 0.

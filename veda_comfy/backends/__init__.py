@@ -124,18 +124,21 @@ def resolve(device: torch.device, requested: str = 'auto',
         return resolution
 
 
-def probe(device: torch.device, requested: str = 'auto') -> list[str]:
-    """Which candidates load on `device`, without compiling or self-testing
-    (cheap; for the status shown before sampling)."""
+def probe(device: torch.device, requested: str = 'auto'
+          ) -> list[tuple[str, str, str | None]]:
+    """(name, display name, error or None) of each candidate on `device`,
+    without compiling or self-testing (cheap; for the status shown before
+    sampling)."""
     info = hardware.describe(device)
-    lines = []
+    out = []
     for name in candidates(info, requested):
         try:
             module = importlib.import_module(f'.{_MODULES[name]}', __name__)
-            lines.append(f'{module.create(info).name}: available')
+            backend = module.create(info)
+            out.append((backend.name, backend.display, None))
         except Exception as error:  # report every failure the same way
-            lines.append(f'{name}: {error}')
-    return lines
+            out.append((name, name, str(error)))
+    return out
 
 
 def reset() -> None:

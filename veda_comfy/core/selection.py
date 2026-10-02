@@ -13,11 +13,12 @@ predictor training use exactly these), restated for this repo:
      the query tile id, so the mean kept count equals the budget exactly.
   5. A query tile's own tile is forced in and consumes budget.
   6. Empty key tiles are never selected.
-  7. The video columns split into a history block [0, n_ref_tiles) (tiled
-     conditions: keyframes, reference images / videos) and the current
-     block [n_ref_tiles, n_video_tiles) (the target video). Each block runs
-     its own top-k with its own budget; one pooled top-k would starve the
-     history block, since spatial neighbours in the target always win.
+  7. The video columns split into a reference block [0, n_ref_tiles)
+     (tiled conditions: keyframes, guide frames, reference images / videos)
+     and the generated block [n_ref_tiles, n_video_tiles) (the target
+     video). Each block runs its own top-k with its own budget; one pooled
+     top-k would starve the reference block, since spatial neighbours in
+     the target always win.
 """
 
 from __future__ import annotations
@@ -55,14 +56,11 @@ class Budget:
             raise ValueError(f'budget must be positive: {self}')
 
     @classmethod
-    def from_user(cls, sparsity_percent: float, tiles: int) -> Budget:
-        """UI convention: tiles > 0 wins; else keep 1 - sparsity."""
-        if tiles > 0:
-            return cls(tiles=float(tiles))
-        if not 0.0 <= sparsity_percent < 100.0:
-            raise ValueError(f'sparsity must be in [0, 100): '
-                             f'{sparsity_percent}')
-        return cls(ratio=1.0 - sparsity_percent / 100.0)
+    def sparsity(cls, percent: float) -> Budget:
+        """Skip `percent` % of the key tiles (keep ratio 1 - percent / 100)."""
+        if not 0.0 <= percent < 100.0:
+            raise ValueError(f'sparsity must be in [0, 100): {percent}')
+        return cls(ratio=1.0 - percent / 100.0)
 
     @property
     def keeps_all(self) -> bool:
@@ -118,15 +116,15 @@ class ColumnBlock:
     real_tokens: int
 
 
-def column_blocks(layout: tiling.TileLayout, current: Budget,
-                  history: Budget) -> list[ColumnBlock]:
-    """The current (target) block, preceded by the history block when
-    history spans are tiled."""
-    target = ColumnBlock(layout.n_ref_tiles, layout.n_video_tiles, current,
+def column_blocks(layout: tiling.TileLayout, generated: Budget,
+                  reference: Budget) -> list[ColumnBlock]:
+    """The generated (target video) block, preceded by the reference block
+    when reference spans are tiled."""
+    target = ColumnBlock(layout.n_ref_tiles, layout.n_video_tiles, generated,
                          layout.target_tokens)
     if layout.n_ref_tiles == 0:
         return [target]
-    return [ColumnBlock(0, layout.n_ref_tiles, history, layout.ref_tokens),
+    return [ColumnBlock(0, layout.n_ref_tiles, reference, layout.ref_tokens),
             target]
 
 

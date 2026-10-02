@@ -54,7 +54,7 @@ def test_auto_resolution_picks_a_sparse_kernel(device):
 
 
 def _problem(device, seq_len=6000, heads=4, seed=0):
-    """Mid-size problem: target 7x16x24 (2688 rows), history 1x16x24,
+    """Mid-size problem: target 7x16x24 (2688 rows), reference 1x16x24,
     text / audio as global rows."""
     spans = [tiling.TiledSpan(300, (1, 16, 24), tiling.TileShape(1, 8, 16)),
              tiling.TiledSpan(1000, (7, 16, 24), tiling.TileShape(4, 4, 8))]

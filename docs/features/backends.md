@@ -8,7 +8,7 @@
 
 - **唯一接口**：`base.Backend.attend(q, k, v, block_mask, layout) -> out`，输入是 tile 顺序的
   `[N, H', 128]`（padding 槽位为 0）和 `[H', n_tiles, n_tiles]` 的 bool 块掩码。
-- **使用前自检**（`base.self_test`）：在真实设备上跑一个包含 history / target / global / 部分
+- **使用前自检**（`base.self_test`）：在真实设备上跑一个包含 reference / target / global / 部分
   tile 的小问题，和 fp32 参考比误差，并检查结果**不是**全注意力——上游 FA4 的 SM80 kernel 收到
   块稀疏参数会静默算 dense，这类问题必须在自检里暴露，而不是在用户的视频里。
 - **候选顺序**（`backends/__init__.py`，第一个加载成功且自检通过的胜出，结果按设备缓存）：

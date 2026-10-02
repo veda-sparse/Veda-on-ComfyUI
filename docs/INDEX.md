@@ -6,7 +6,7 @@ feature 文档的「踩坑记录」，并在 `pitfalls.md` 加一行索引。
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | [features/comfyui_node.md](features/comfyui_node.md) | 节点、attention override 接入、用户交互（状态文字、回退、下载）、设置语义 | CPU 集成测试通过（ComfyUI 0.38）；真实 ComfyUI server 加载验证 |
-| [features/core_selection.md](features/core_selection.md) | H3 布局映射、tile 排列、方案表选择、打分、current / history 预算与选择规则、引擎 | CPU 测试通过 |
+| [features/core_selection.md](features/core_selection.md) | H3 布局映射、tile 排列、方案表选择、打分、generated / reference 预算与选择规则、引擎 | CPU 测试通过 |
 | [features/backends.md](features/backends.md) | 后端契约、自检、候选顺序、各后端实现与隔离规则 | torch / mlx 在 CPU + MPS 通过；CUDA 后端见 hardware.md |
 | [features/fa4_vendoring.md](features/fa4_vendoring.md) | FA4 私有副本的生成、补丁、Windows 兼容、升级流程 | 生成与静态检查通过 |
 | [features/packaging_release.md](features/packaging_release.md) | 安装脚本、Comfy Registry 打包与发布、示例工作流、CI | 当前 |

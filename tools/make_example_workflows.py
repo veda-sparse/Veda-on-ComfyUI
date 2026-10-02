@@ -51,9 +51,11 @@ H3 checkpoints work as usual.
 * Compare: select the Veda node and press **Ctrl+B** (bypass) to render the
   same seed with full attention.
 * Trained sizes: 1344x768, 768x1344, 768x768, 1024x768 at 5 / 10 / 14 s.
-  Other sizes work but use the nearest plan (the node says so).
-* Tuning (advanced inputs): current / history sparsity or tile counts,
-  0-based full-attention layers and steps, kernel backend.
+  Other sizes work with the plan of the nearest aspect ratio and duration
+  (the node says so).
+* Tuning (advanced inputs): generated / reference sparsity ("90%" or a
+  tile count such as "24"), 0-based full-attention layers and steps,
+  kernel backend, verbose diagnostics.
 * NVIDIA: run `install_fa4` in the Veda folder once for the fastest
   kernels. Apple silicon: `pip install mlx`.
 """
@@ -90,8 +92,8 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int) -> dict:
                         'url': known.url('https://huggingface.co'),
                         'directory': 'veda'}],
         },
-        'widgets_values': [known.filename, 90, 0, 90, 0, '', '', 'auto',
-                           'sparse (nearest plan)', False],
+        'widgets_values': [known.filename, '90%', '90%', '', '', 'auto',
+                           False],
     }
 
 

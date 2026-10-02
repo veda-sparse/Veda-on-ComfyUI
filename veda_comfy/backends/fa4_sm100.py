@@ -116,6 +116,7 @@ class Fa4Sm100Backend(base.Backend):
 
     def __init__(self, family: str):
         self.name = f'fa4-{family}'
+        self.display = f'FA4 ({family.upper()})'
 
     def attend(self, q, k, v, block_mask, layout):
         _, _, block_sparsity, interface, _ = _modules()

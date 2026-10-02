@@ -8,18 +8,17 @@ from veda_comfy.core import tiling
 
 
 def _layout():
-    # history: one 1x8x16 span; target 5x8x8 tiled 2x8x8 -> 3 tiles
+    # reference: one 1x8x16 span; target 5x8x8 tiled 2x8x8 -> 3 tiles
     spans = [tiling.TiledSpan(20, (1, 8, 16), tiling.TileShape(1, 8, 16)),
              tiling.TiledSpan(200, (5, 8, 8), tiling.TileShape(2, 8, 8))]
     return tiling.build_tile_layout(spans, 200 + 320 + 10)
 
 
-def test_budget_from_user():
-    assert selection.Budget.from_user(90.0, 0).ratio == pytest.approx(0.1)
-    assert selection.Budget.from_user(90.0, 12).tiles == 12
-    assert selection.Budget.from_user(0.0, 0).keeps_all
+def test_budget_sparsity():
+    assert selection.Budget.sparsity(90.0).ratio == pytest.approx(0.1)
+    assert selection.Budget.sparsity(0.0).keeps_all
     with pytest.raises(ValueError):
-        selection.Budget.from_user(100.0, 0)
+        selection.Budget.sparsity(100.0)
 
 
 def test_equal_cost_budget():
@@ -42,14 +41,14 @@ def test_select_forces_diagonal_and_respects_blocks():
     n_video = layout.n_video_tiles
     assert layout.n_ref_tiles == 1 and n_video == 4
     scores = torch.randn(2, n_video, n_video)
-    scores[:, :, 0] = -1e9  # history scores worst, but its own row keeps it
+    scores[:, :, 0] = -1e9  # reference scores worst; its own row keeps it
     blocks = selection.column_blocks(layout, selection.Budget(tiles=1),
                                      selection.Budget(tiles=1))
     index, keep = selection.select(scores, layout, blocks)
     mask = selection.block_mask(index, keep, layout)
     video = mask[:, :n_video, :n_video]
     assert video.diagonal(dim1=1, dim2=2).all()
-    # one history column and one target column per row (budget 1 each)
+    # one reference column and one target column per row (budget 1 each)
     assert (video[:, :, :1].sum(-1) == 1).all()
     assert (video[:, :, 1:].sum(-1) == 1).all()
     # global rows / columns always on

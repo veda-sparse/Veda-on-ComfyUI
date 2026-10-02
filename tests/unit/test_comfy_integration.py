@@ -90,12 +90,12 @@ def _forward(h3, case, patch=None):
     return out, payload['layout']
 
 
-def _patch(bundle, current, history, **kwargs):
+def _patch(bundle, generated, reference, **kwargs):
     from veda_comfy import comfy_patch
     from veda_comfy import settings
     from veda_comfy.core import selection
-    s = settings.VedaSettings(current=selection.Budget(**current),
-                              history=selection.Budget(**history),
+    s = settings.VedaSettings(generated=selection.Budget(**generated),
+                              reference=selection.Budget(**reference),
                               backend='torch', **kwargs)
     return comfy_patch.VedaPatch(bundle, s, node_id=None)
 
@@ -124,10 +124,10 @@ def test_sparse_runs_every_block(h3, bundle, case):
     engine = next(iter(patch._engines.values()))
     spec = engine.layout_spec(layout)
     expected = {'t2va': 0, 'fl2va': 1, 'r2va': 2}[case]
-    assert len(spec.history) == expected
+    assert len(spec.references) == expected
 
 
-def test_history_full_attention_leaves_conditions_untiled(h3, bundle):
+def test_reference_full_attention_leaves_conditions_untiled(h3, bundle):
     patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 1.0})
     _forward(h3, 'r2va', patch)
     engine = next(iter(patch._engines.values()))
@@ -167,3 +167,21 @@ def test_declined_calls_reach_the_previous_override(h3, bundle):
               minimax_payload=payload)
     assert seen == [1]
     assert len(patch.installed) == 1
+
+
+@pytest.mark.parametrize('verbose', [False, True])
+def test_node_text_reports_sparsity_not_call_counts(h3, bundle, verbose):
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1}, verbose=verbose)
+    shown = []
+    patch.status.show = lambda text, *a: shown.append(text)
+    patch.status.warn = lambda text: shown.append(text)
+    _forward(h3, 't2va', patch)
+    patch.on_cleanup()
+    running, summary = shown[0], shown[-1]
+    assert running.startswith('⚡ Veda running · PyTorch SDPA')
+    assert 'Video: 448x256' in running and 'Sparsity: generated 90%' in running
+    assert summary.startswith('✅ Veda done · PyTorch SDPA')
+    assert '% of full attention' in summary
+    assert ('Attention calls' in summary) == verbose
+    assert 'sparse /' not in summary
+    assert patch.calls == {}  # reset for the next run

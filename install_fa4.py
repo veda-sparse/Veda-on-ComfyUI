@@ -88,7 +88,8 @@ def check() -> int:
     for device in devices:
         resolution = backends.resolve(
             device, notify=lambda text: print(f'  ... {text}', flush=True))
-        name = resolution.backend.name if resolution.backend else 'none'
+        name = (resolution.backend.display if resolution.backend
+                else 'full attention (no sparse kernel)')
         print(f'{resolution.device.label}: Veda uses {name}')
         for candidate, status in resolution.attempts:
             print(f'  {candidate}: {status}')

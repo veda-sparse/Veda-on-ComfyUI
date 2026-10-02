@@ -9,7 +9,6 @@ silent fallback.
 
 from __future__ import annotations
 
-import logging
 import os
 import threading
 
@@ -26,10 +25,8 @@ from . import hardware
 from . import settings as veda_settings
 from . import status as veda_status
 from .core import bundle as veda_bundle
-from .core import selection
 
 FOLDER = 'veda'
-_UNTRAINED = ('sparse (nearest plan)', 'full attention')
 _BUNDLES: dict[str, tuple[tuple[float, int], veda_bundle.PredictorBundle]] = {}
 _BUNDLE_LOCK = threading.Lock()
 
@@ -142,32 +139,20 @@ class VedaSparseAttention(io.ComfyNode):
                     tooltip=f'Veda predictor in models/{FOLDER}. The '
                             'official release is downloaded automatically '
                             'on first use (set HF_ENDPOINT for a mirror).'),
-                io.Float.Input(
-                    'current_sparsity', default=90.0, min=0.0, max=99.5,
-                    step=0.5, advanced=True,
-                    tooltip='% of the generated video\'s key tiles each '
-                            'query tile skips. 90 = keep 10% (trained '
-                            'value). Lower is closer to full attention and '
-                            'slower.'),
-                io.Int.Input(
-                    'current_tiles', default=0, min=0, max=8192,
-                    advanced=True,
-                    tooltip='> 0: keep exactly this many video key tiles '
-                            '(128 tokens each) per query tile instead of '
-                            'current_sparsity.'),
-                io.Float.Input(
-                    'history_sparsity', default=90.0, min=0.0, max=99.5,
-                    step=0.5, advanced=True,
-                    tooltip='% of the condition key tiles (first/last '
+                io.String.Input(
+                    'generated_sparsity', default='90%', advanced=True,
+                    tooltip='Sparsity of the generated video\'s attention. '
+                            '"90%" skips 90% of the key tiles each query '
+                            'tile could attend (the trained value; lower is '
+                            'closer to full attention and slower). A whole '
+                            'number such as "24" keeps exactly that many '
+                            'key tiles of 128 tokens instead.'),
+                io.String.Input(
+                    'reference_sparsity', default='90%', advanced=True,
+                    tooltip='The same for the references: first / last '
                             'frames, guide frames, reference images and '
-                            'videos) each query tile skips. 0 = conditions '
-                            'use full attention.'),
-                io.Int.Input(
-                    'history_tiles', default=0, min=0, max=8192,
-                    advanced=True,
-                    tooltip='> 0: keep exactly this many condition key '
-                            'tiles per query tile instead of '
-                            'history_sparsity.'),
+                            'videos. "0%" keeps full attention to and from '
+                            'them.'),
                 io.String.Input(
                     'full_attention_layers', default='', advanced=True,
                     tooltip='0-based DiT blocks that keep full attention, '
@@ -184,15 +169,10 @@ class VedaSparseAttention(io.ComfyNode):
                             'passes a self-test on this GPU: FA4 -> '
                             'FlexAttention -> torch (NVIDIA), MLX -> torch '
                             '(Apple).'),
-                io.Combo.Input(
-                    'untrained_size', options=list(_UNTRAINED),
-                    default=_UNTRAINED[0], advanced=True,
-                    tooltip='For sizes the predictor was not trained on: '
-                            'stay sparse with the nearest tile plan, or '
-                            'fall back to full attention.'),
                 io.Boolean.Input(
                     'verbose', default=False, advanced=True,
-                    tooltip='Log how every attention call was handled.'),
+                    tooltip='Also show timing and diagnostics on the node '
+                            'after each run, and log every decision.'),
             ],
             outputs=[io.Model.Output(tooltip='The model with Veda sparse '
                                      'attention.')],
@@ -200,10 +180,9 @@ class VedaSparseAttention(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, predictor, current_sparsity=90.0,
-                current_tiles=0, history_sparsity=90.0, history_tiles=0,
-                full_attention_layers='', full_attention_steps='',
-                backend='auto', untrained_size=_UNTRAINED[0],
+    def execute(cls, model, predictor, generated_sparsity='90%',
+                reference_sparsity='90%', full_attention_layers='',
+                full_attention_steps='', backend='auto',
                 verbose=False) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
         node_id = getattr(hidden, 'unique_id', None)
@@ -214,17 +193,15 @@ class VedaSparseAttention(io.ComfyNode):
             raise ValueError(str(error)) from error
         num_layers, _, _ = _check_model(model, bundle)
         settings = veda_settings.VedaSettings(
-            current=selection.Budget.from_user(current_sparsity,
-                                               current_tiles),
-            history=selection.Budget.from_user(history_sparsity,
-                                               history_tiles),
+            generated=veda_settings.parse_sparsity(generated_sparsity,
+                                                   'generated_sparsity'),
+            reference=veda_settings.parse_sparsity(reference_sparsity,
+                                                   'reference_sparsity'),
             dense_layers=veda_settings.parse_index_list(
                 full_attention_layers, 'full_attention_layers'),
             dense_steps=veda_settings.parse_index_list(
                 full_attention_steps, 'full_attention_steps'),
             backend=backend,
-            untrained_geometry=('dense' if untrained_size == _UNTRAINED[1]
-                                else 'sparse'),
             verbose=verbose)
         missing = sorted(i for i in settings.dense_layers if i >= num_layers)
         if missing:
@@ -235,25 +212,28 @@ class VedaSparseAttention(io.ComfyNode):
         patched, _ = comfy_patch.apply(model, bundle, settings, node_id)
         device = comfy.model_management.get_torch_device()
         info = hardware.describe(device)
-        lines = backends.probe(device, backend)
-        ready = [line.split(':')[0] for line in lines
-                 if line.endswith(': available')]
-        kernel = ready[0] if ready else 'none (full attention)'
-        text = (f'Ready · {info.label} · kernel {kernel} · '
-                f'{settings.describe()}')
-        fa4 = [line for line in lines if line.startswith('fa4')
-               and not line.endswith(': available')]
-        if fa4 and info.kind == 'cuda':
-            text += ' · install the FA4 kernels for full speed (install_fa4)'
+        probe = backends.probe(device, backend)
+        usable = [display for _, display, error in probe if error is None]
+        lines = [f'Veda ready · {usable[0] if usable else "full attention"}'
+                 f' on {info.label}',
+                 f'Sparsity: {settings.describe()}']
+        full = settings.describe_full_attention()
+        if full:
+            lines.append(f'Full attention: {full}')
+        if info.kind == 'cuda' and any(
+                name.startswith('fa4') and error for name, _, error in probe):
+            lines.append('Tip: run install_fa4 in the Veda folder for the '
+                         'fastest kernels (FA4)')
+        if verbose:
+            lines.append(f'Predictor: {bundle.describe()}')
+            lines += [f'  {name}: {error or "available"}'
+                      for name, _, error in probe]
         if _other_sparse_node(model):
             status.warn('⚠ ComfyUI\'s "Model Sparse Attention" node is also '
                         'applied; on H3 it replaces the attention blocks, so '
                         'Veda would not run. Remove one of the two.')
         else:
-            status.show(text)
-        if verbose:
-            logging.info('Veda: %s; backends: %s', bundle.describe(),
-                         '; '.join(lines))
+            status.show('\n'.join(lines))
         return io.NodeOutput(patched)
 
 

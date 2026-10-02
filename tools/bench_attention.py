@@ -73,6 +73,8 @@ def main() -> None:
                         choices=backends.CHOICES)
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--device', default=None)
+    parser.add_argument('--profile', action='store_true',
+                        help='break the Veda time down by phase (CUDA)')
     args = parser.parse_args()
     device = torch.device(args.device or (
         'cuda' if torch.cuda.is_available() else
@@ -103,8 +105,21 @@ def main() -> None:
     print(f'{args.aspect} latent_t {args.latent_t}: {seq_len} tokens, '
           f'{args.sparsity:g}% sparse')
     print(f'  full attention (SDPA): {dense_ms:8.1f} ms / layer')
-    print(f'  Veda ({resolution.backend.name}): {veda_ms:8.1f} ms / layer '
-          f'-> {dense_ms / veda_ms:.2f}x')
+    print(f'  Veda ({resolution.backend.display}): {veda_ms:8.1f} ms / '
+          f'layer -> {dense_ms / veda_ms:.2f}x')
+    print(f'  attention computed: {100 * engine.stats.compute_fraction():.1f}%'
+          ' of full attention')
+    if args.profile:
+        timer = engine.enable_timing()
+        if timer is None:
+            sys.exit('--profile needs CUDA')
+        for _ in range(args.repeat):
+            engine.attention(q, k, v, 0, spec, plan)
+        phases = timer.summary()
+        total = sum(phases.values())
+        for name, ms in sorted(phases.items(), key=lambda kv: -kv[1]):
+            print(f'    {name:8s} {ms / args.repeat:8.1f} ms  '
+                  f'({100 * ms / total:4.1f}%)')
 
 
 if __name__ == '__main__':

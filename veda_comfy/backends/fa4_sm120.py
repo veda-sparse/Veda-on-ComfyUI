@@ -68,6 +68,7 @@ class Fa4Sm120Backend(base.Backend):
 
     def __init__(self, family: str, subtype: str):
         self.name = f'fa4-{family}'
+        self.display = f'FA4 ({family.upper()})'
         self.subtype = subtype
 
     def attend(self, q, k, v, block_mask, layout):

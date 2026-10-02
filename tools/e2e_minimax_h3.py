@@ -80,15 +80,12 @@ def build_graph(args, veda: bool, prefix: str) -> dict:
         graph['3'] = {'class_type': 'VedaSparseAttention',
                       'inputs': {'model': ['2', 0],
                                  'predictor': args.predictor,
-                                 'current_sparsity': 90.0,
-                                 'current_tiles': 0,
-                                 'history_sparsity': 90.0,
-                                 'history_tiles': 0,
+                                 'generated_sparsity': args.sparsity,
+                                 'reference_sparsity': args.sparsity,
                                  'full_attention_layers': '',
                                  'full_attention_steps': '',
                                  'backend': args.backend,
-                                 'untrained_size': 'sparse (nearest plan)',
-                                 'verbose': False}}
+                                 'verbose': args.verbose}}
         model = ['3', 0]
     graph['11'] = {'class_type': 'BasicGuider',
                    'inputs': {'model': model, 'conditioning': ['7', 0]}}
@@ -162,6 +159,8 @@ def main() -> None:
     parser.add_argument('--steps', type=int, default=8)
     parser.add_argument('--prompt', default=PROMPT)
     parser.add_argument('--backend', default='auto')
+    parser.add_argument('--sparsity', default='90%')
+    parser.add_argument('--verbose', action='store_true')
     parser.add_argument(
         '--unet', default='minimax_h3_fl2va_pruned_int8_convrot.safetensors')
     parser.add_argument(

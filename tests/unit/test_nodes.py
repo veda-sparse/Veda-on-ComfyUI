@@ -70,7 +70,8 @@ def test_execute_installs_the_override(node):
 @pytest.mark.parametrize('kwargs,match', [
     ({'full_attention_layers': '0, 9'}, 'blocks 0-1'),
     ({'full_attention_steps': 'last'}, '0-based'),
-    ({'current_sparsity': 100.0}, 'sparsity'),
+    ({'generated_sparsity': '100%'}, 'generated_sparsity'),
+    ({'reference_sparsity': 'most'}, 'reference_sparsity'),
 ])
 def test_execute_explains_bad_settings(node, kwargs, match):
     with pytest.raises(ValueError, match=match):

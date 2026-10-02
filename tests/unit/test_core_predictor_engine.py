@@ -36,12 +36,13 @@ def test_logits_untrained_equal_mean_pooled_qk():
     torch.testing.assert_close(logits, want)
 
 
-def _spec(history=True):
-    spans = [h3_layout.SpanSpec('ref_img', 30, (1, 8, 16))] if history else []
+def _spec(references=True):
+    spans = ([h3_layout.SpanSpec('ref_img', 30, (1, 8, 16))]
+             if references else [])
     return h3_layout.LayoutSpec(
         seq_len=30 + 128 + 40 + 5 * 8 * 14 + 3,
         target=h3_layout.SpanSpec('target', 198, (5, 8, 14)),
-        history=tuple(spans))
+        references=tuple(spans))
 
 
 @pytest.fixture
@@ -57,9 +58,9 @@ def _qkv(seq_len, heads=4, seed=0):
     return [torch.randn(seq_len, heads, 128, generator=g) for _ in range(3)]
 
 
-@pytest.mark.parametrize('history', [True, False])
-def test_engine_keep_all_equals_dense(bundle, history):
-    spec = _spec(history)
+@pytest.mark.parametrize('references', [True, False])
+def test_engine_keep_all_equals_dense(bundle, references):
+    spec = _spec(references)
     keep_all = selection.Budget(tiles=10**6)
     engine = veda_engine.VedaEngine(bundle, keep_all, keep_all,
                                     torch_gather.TorchGatherBackend(),
@@ -102,3 +103,4 @@ def test_engine_matches_reference_per_head_group(bundle, monkeypatch):
             want[:, head] = buf[:-1, head]
     torch.testing.assert_close(out, want, rtol=1e-4, atol=1e-4)
     assert engine.stats.kept_fraction() < 0.9
+    assert 0.0 < engine.stats.compute_fraction() < 1.0

@@ -61,7 +61,7 @@ class DeviceInfo:
     def label(self) -> str:
         if self.kind == 'cuda':
             short = self.name.replace('NVIDIA ', '').replace('GeForce ', '')
-            return f'{short} ({self.family})'
+            return f'{short} ({self.family.upper()})'
         if self.kind == 'mps':
             return f'{self.name} (Metal)'
         return self.name

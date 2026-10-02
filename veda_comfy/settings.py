@@ -15,6 +15,8 @@ from .core import selection
 # Separators users type: ASCII and full-width commas / semicolons, spaces.
 _SPLIT = re.compile(r'[\s,;，；、]+')
 _RANGE = re.compile(r'^(\d+)\s*[-~–—]\s*(\d+)$')
+_PERCENT = re.compile(r'^(\d+(?:\.\d+)?)\s*[%％]$')
+_TILES = re.compile(r'^(\d+)$')
 
 
 def parse_index_list(text: str, what: str) -> frozenset[int]:
@@ -42,6 +44,29 @@ def parse_index_list(text: str, what: str) -> frozenset[int]:
     return frozenset(indices)
 
 
+def parse_sparsity(text: str, what: str) -> selection.Budget:
+    """'90%' -> skip 90% of the key tiles; '24' -> keep exactly 24 tiles.
+
+    Raises:
+        ValueError: On anything else, or a percentage outside [0, 100).
+    """
+    value = (text or '').strip()
+    match = _PERCENT.match(value)
+    if match is not None:
+        percent = float(match.group(1))
+        if percent >= 100.0:
+            raise ValueError(f'{what}: {value} would skip every tile; use a '
+                             'percentage below 100%, e.g. "90%".')
+        return selection.Budget.sparsity(percent)
+    match = _TILES.match(value)
+    if match is not None and int(match.group(1)) > 0:
+        return selection.Budget(tiles=float(match.group(1)))
+    raise ValueError(f'{what}: cannot read {value!r}. Write a sparsity '
+                     'percentage such as "90%" (skip 90% of the tiles), or '
+                     'a whole number such as "24" (keep 24 tiles of 128 '
+                     'tokens per query tile).')
+
+
 def format_index_list(indices: Sequence[int] | frozenset[int]) -> str:
     """{0, 1, 47, 48, 49} -> '0-1, 47-49'."""
     values = sorted(indices)
@@ -55,40 +80,46 @@ def format_index_list(indices: Sequence[int] | frozenset[int]) -> str:
     return ', '.join(parts)
 
 
+def format_budget(budget: selection.Budget) -> str:
+    """'90%' or '24 tiles' (the way the user wrote it)."""
+    if budget.tiles is not None:
+        return f'{budget.tiles:g} tiles'
+    return f'{100.0 * (1.0 - min(budget.ratio, 1.0)):g}%'
+
+
 @dataclasses.dataclass(frozen=True)
 class VedaSettings:
     """Everything the node configures.
 
     Attributes:
-        current: Budget of the target-video key tiles.
-        history: Budget of the condition key tiles (keyframes, references);
-            keeps_all means conditions stay dense (untiled).
+        generated: Budget of the generated (target) video's key tiles.
+        reference: Budget of the reference / condition key tiles (first /
+            last frames, guide frames, reference images and videos);
+            keeps_all means they stay in full attention (untiled).
         dense_layers: 0-based DiT blocks that run full attention.
         dense_steps: 0-based sampling steps that run full attention.
         backend: One of backends.CHOICES.
-        untrained_geometry: 'sparse' (use the nearest plan) or 'dense' for
-            sizes no bundled plan was trained on.
-        verbose: Log every decision.
+        verbose: Show performance diagnostics and log every decision.
     """
 
-    current: selection.Budget
-    history: selection.Budget
+    generated: selection.Budget
+    reference: selection.Budget
     dense_layers: frozenset[int] = frozenset()
     dense_steps: frozenset[int] = frozenset()
     backend: str = 'auto'
-    untrained_geometry: str = 'sparse'
     verbose: bool = False
 
     def describe(self) -> str:
-        parts = [f'current {self.current.describe()}',
-                 f'history {self.history.describe()}']
+        return (f'generated {format_budget(self.generated)} · reference '
+                f'{format_budget(self.reference)}')
+
+    def describe_full_attention(self) -> str | None:
+        parts = []
         if self.dense_layers:
-            parts.append(f'full-attention layers '
-                         f'{format_index_list(self.dense_layers)}')
+            parts.append(f'layers {format_index_list(self.dense_layers)}')
         if self.dense_steps:
-            parts.append(f'full-attention steps '
-                         f'{format_index_list(self.dense_steps)}')
-        return ' · '.join(parts)
+            parts.append(f'steps {format_index_list(self.dense_steps)}')
+        return ' · '.join(parts) or None
 
 
 def step_index(sigma: float, sample_sigmas: Sequence[float]) -> int | None:

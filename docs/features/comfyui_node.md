@@ -34,11 +34,18 @@
 
 | 输入 | 语义 |
 |---|---|
-| `current_sparsity` / `current_tiles` | current = 正在生成的目标视频 token。比例按等 kernel 代价计算（见 core_selection.md 规则 3）；`tiles > 0` 时每个 query tile 固定保留这么多个目标 key tile。 |
-| `history_sparsity` / `history_tiles` | history = 条件视觉 token（FL2VA 关键帧 / AddGuide 引导帧 = `cond` 段，R2VA 参考图与参考视频 = `ref_img` 段）。保留比例 >= 1（即 0% 稀疏）时条件段不 tile，作为 global 行双向全注意力。 |
+| `generated_sparsity` | generated = 正在生成的目标视频 token。一个输入框两种写法：`90%` 是稀疏比例（保留比例 = 1 - 90%，按等 kernel 代价计算，见 core_selection.md 规则 3）；整数如 `24` 是每个 query tile 固定保留的 key tile 数。 |
+| `reference_sparsity` | reference = 条件视觉 token（FL2VA 关键帧 / AddGuide 引导帧 = `cond` 段，R2VA 参考图与参考视频 = `ref_img` 段），写法同上。`0%` 时参考段不 tile，作为 global 行双向全注意力。 |
 | `full_attention_layers` | 0 起的 DiT block 下标，这些层不做稀疏，跑完整注意力。 |
 | `full_attention_steps` | 0 起的采样步下标。第 i 步覆盖 `sample_sigmas[i] >= sigma > sample_sigmas[i+1]`，所以多阶段采样器的中间求值也算在第 i 步。 |
-| `untrained_size` | 目标网格没有完全匹配的训练方案时，用最近的方案继续稀疏，或改走全注意力。 |
+| `verbose` | 运行结束后节点上额外显示诊断信息：Veda 注意力总耗时、每次模型调用的耗时、各阶段（gather / score / select / kernel / scatter）耗时（CUDA event 计时）、保留的 video tile 比例、调用次数与全注意力原因、打分器信息。 |
+
+尺寸没有完全匹配的训练方案时，固定使用纵横比最接近、其次时长最接近的方案（含 H/W 转置），并在节点上标 ⚠。
+
+**节点文字**（`send_progress_text`，多行）：就绪时显示 kernel（大写的正式名，如 `FA4 (SM120)`）和稀疏度；
+第一次稀疏调用时显示视频尺寸 / 时长和匹配的方案；运行结束显示"实际计算了全注意力的百分之多少"——按 128x128
+块计：保留的 video 块 + 永远全算的 global 行列，除以全注意力的 (S/128)² 块。不显示调用次数（那是 verbose
+的内容）。
 
 ## 代码位置与接口
 
@@ -51,7 +58,7 @@
 
 - `tests/unit/test_comfy_integration.py`：用 ComfyUI 真实的 `MiniMaxH3Model.forward`（小随机
   模型）跑 T2VA / FL2VA / R2VA：全保留预算必须复现全注意力（1e-4）；90% 稀疏时每个 block 都走
-  稀疏路径；history 段数正确；`full_attention_*` 生效；拒绝的调用到达之前的 override。
+  稀疏路径；reference 段数正确；`full_attention_*` 生效；拒绝的调用到达之前的 override。
 - `tests/unit/test_nodes.py`：schema（只有 model / predictor 可见）、各种错误信息、patch 安装。
 - `tests/unit/test_downloads.py`：断点续传、sha256 校验、错误信息。
 

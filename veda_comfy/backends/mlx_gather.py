@@ -41,6 +41,7 @@ class MlxGatherBackend(base.Backend):
     """Gather + MLX SDPA."""
 
     name = 'mlx'
+    display = 'MLX'
     dtypes = (torch.bfloat16, torch.float16, torch.float32)
 
     def __init__(self, mx, chunk_bytes: int = DEFAULT_CHUNK_BYTES):

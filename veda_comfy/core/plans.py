@@ -86,12 +86,26 @@ class PlanChoice:
     Attributes:
         plan: The plan to use.
         exact: The plan was searched on exactly this grid.
-        how: Human-readable reason, shown to the user.
+        how: Human-readable description, shown to the user.
     """
 
     plan: TilePlan
     exact: bool
     how: str
+
+
+FPS = 24
+
+
+def frames_from_latent_t(latent_t: int) -> int:
+    """H3's video frame count for a latent length (17n + 5 frames)."""
+    return 17 * ((latent_t - 2) // 5) + 5 if latent_t >= 2 else 1
+
+
+def describe_grid(grid) -> str:
+    """'1344x768 · 5.2 s' for a token grid (T, H, W)."""
+    seconds = frames_from_latent_t(grid[0]) / FPS
+    return f'{grid[2] * 32}x{grid[1] * 32} · {seconds:.1f} s'
 
 
 def _aspect(grid) -> float:
@@ -108,50 +122,39 @@ class PlanTable:
         self._choices: dict[tuple[int, int, int], PlanChoice] = {}
 
     def select(self, grid: tuple[int, int, int]) -> PlanChoice:
-        """Plan for a target token grid (T, H, W).
+        """Plan for a target token grid (T, H, W): nearest aspect ratio,
+        then nearest duration (latent frames), then least padding.
 
-        Rule: the plan searched on this exact grid; else a plan with the
-        same frame grid (H, W) and the nearest T; else the plan (or its H<->W
-        transpose) with the nearest aspect ratio, then the nearest T, then
-        the least padding. Never fails: an approximate plan still gives a
-        valid tiling, it is just outside the trained distribution.
+        Plans of the H<->W transposed geometry are candidates too (they
+        only win when no plan has a closer aspect ratio). Never fails: a
+        plan of another size still tiles any grid, it is just outside what
+        the predictor was trained on, which `exact` and `how` report.
         """
         grid = tuple(int(g) for g in grid)
         if grid in self._choices:
             return self._choices[grid]
-        plans = list(self.plans.values())
-        exact = [p for p in plans if p.grid == grid]
+        candidates = list(self.plans.values())
+        candidates += [p.transposed() for p in candidates]
+        target = math.log(_aspect(grid))
+
+        def cost(p):
+            padding = sum(s.num_tiles(grid) for s in p.shapes)
+            return (round(abs(math.log(_aspect(p.grid)) - target), 3),
+                    abs(p.grid[0] - grid[0]), padding)
+
+        plan = min(candidates, key=cost)
+        exact = plan.grid == grid
         if exact:
-            choice = PlanChoice(exact[0], True, f'trained plan {exact[0].name}')
+            how = f'trained for this size ({describe_grid(grid)})'
         else:
-            same_frame = [p for p in plans if p.grid[1:] == grid[1:]]
-            if same_frame:
-                plan = min(same_frame,
-                           key=lambda p: (abs(p.grid[0] - grid[0]), p.grid[0]))
-                choice = PlanChoice(
-                    plan, False,
-                    f'nearest length: plan {plan.name} (trained for '
-                    f'{plan.grid[0]} latent frames, this video has {grid[0]})')
-            else:
-                candidates = plans + [p.transposed() for p in plans]
-                target = math.log(_aspect(grid))
-
-                def cost(p):
-                    padding = sum(s.num_tiles(grid) for s in p.shapes)
-                    return (round(abs(math.log(_aspect(p.grid)) - target), 3),
-                            abs(p.grid[0] - grid[0]), padding)
-
-                plan = min(candidates, key=cost)
-                choice = PlanChoice(
-                    plan, False,
-                    f'nearest aspect: plan {plan.name} (trained for a '
-                    f'{plan.grid[2] * 32}x{plan.grid[1] * 32} canvas, this '
-                    f'video is {grid[2] * 32}x{grid[1] * 32})')
+            how = (f'nearest trained size: {describe_grid(plan.grid)} '
+                   f'(this video: {describe_grid(grid)})')
+        choice = PlanChoice(plan, exact, how)
         self._choices[grid] = choice
         return choice
 
     def summary(self) -> str:
-        """e.g. '16:9, 9:16, 1:1, 4:3 x latent frames 37/72/102'."""
+        """e.g. '16:9, 9:16, 1:1, 4:3 x 5.2 / 10.1 / 14.4 s'."""
         aspects, lengths = [], set()
         for name in sorted(self.plans):
             aspect, _, t = name.partition('_t')
@@ -160,5 +163,6 @@ class PlanTable:
                 aspects.append(label)
             if t.isdigit():
                 lengths.add(int(t))
-        frames = '/'.join(str(t) for t in sorted(lengths))
-        return f'{", ".join(aspects)} x latent frames {frames}'
+        seconds = ' / '.join(f'{frames_from_latent_t(t) / FPS:.1f}'
+                             for t in sorted(lengths))
+        return f'{", ".join(aspects)} x {seconds} s'

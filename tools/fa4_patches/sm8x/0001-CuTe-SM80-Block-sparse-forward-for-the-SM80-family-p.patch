@@ -1,0 +1,540 @@
+From 5e9109b4759467ac572196948cb945a764c42b19 Mon Sep 17 00:00:00 2001
+From: MarsTechHAN <hansh-sz@hotmail.com>
+Date: Wed, 23 Sep 2026 21:24:48 +0800
+Subject: [PATCH 1/5] [CuTe, SM80] Block-sparse forward for the SM80-family
+ path (sm80/86/89)
+
+FlashAttentionForwardSm80 accepted blocksparse_tensors but never used them,
+so block-sparse calls on sm8x silently computed dense attention.
+
+- Add a block-sparse mainloop to FlashAttentionForwardSm80: visit the partial
+  (mask) list then the full list in reverse order (SM90 convention); mask_mod
+  is applied only to partial blocks. The next sparse block index is read one
+  block ahead; K of the next visited tile is cp.async-prefetched under
+  softmax + PV exactly as in the dense loop. The online softmax starts from
+  row_max=-inf so no "first block" peeling is needed; empty rows give O=0,
+  LSE=-inf.
+- Support coarse sparse blocks via q_subtile_factor / kv_subtile_factor (one
+  128x128 sparse block = several tile_m x tile_n tiles). Loads/seqlen masking
+  are predicated only for tiles crossing seqlen_k (runtime check), so a
+  partially or fully out-of-bounds sub-tile is handled.
+- interface: allow kv_subtile on arch 8.x, pass the subtile factors to the
+  SM80 kernel, and pick a 128x32 tile (2 CTAs/SM) for block-sparse hdim<=128
+  when block_size is given (measured fastest on RTX 4090).
+---
+ flash_attn/cute/flash_fwd.py | 342 +++++++++++++++++++++++++++--------
+ flash_attn/cute/interface.py |  36 +++-
+ 2 files changed, 306 insertions(+), 72 deletions(-)
+
+diff --git a/flash_attn/cute/flash_fwd.py b/flash_attn/cute/flash_fwd.py
+index 7ae0ba5..c87549d 100644
+--- a/flash_attn/cute/flash_fwd.py
++++ b/flash_attn/cute/flash_fwd.py
+@@ -33,6 +33,7 @@ from flash_attn.cute.block_info import BlockInfo
+ from flash_attn.cute.pack_gqa import PackGQA, pack_gqa_layout
+ from flash_attn.cute.named_barrier import NamedBarrierFwd
+ from flash_attn.cute.block_sparsity import BlockSparseTensors
++from flash_attn.cute.block_sparse_utils import get_curr_blocksparse_tensors, sparse_tensor_m_block
+ from flash_attn.cute.tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, TileSchedulerArguments
+ from flash_attn.cute.utils import AuxData
+ 
+@@ -57,6 +58,7 @@ class FlashAttentionForwardBase:
+         mask_mod: Optional[cutlass.Constexpr] = None,
+         has_aux_tensors: bool = False,
+         q_subtile_factor: int = 1,
++        kv_subtile_factor: int = 1,
+     ):
+         """Initializes the configuration for a flash attention kernel.
+ 
+@@ -96,6 +98,8 @@ class FlashAttentionForwardBase:
+         self.num_threads = num_threads
+         self.num_stages = num_stages
+         self.q_subtile_factor = q_subtile_factor
++        # Number of physical tile_n KV tiles covered by one sparse KV block (block sparsity only).
++        self.kv_subtile_factor = kv_subtile_factor
+         self.Q_in_regs = Q_in_regs
+         self.score_mod = score_mod
+         self.mask_mod = mask_mod
+@@ -649,6 +653,18 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         (batch_size, seqlen_q, num_head, head_dim):(_, _, _, 1)
+         """
+         assert learnable_sink is None, "Learnable sink is not supported in this kernel"
++        if const_expr(blocksparse_tensors is not None):
++            if const_expr(self.is_causal or self.is_local):
++                raise NotImplementedError(
++                    "Block sparsity with causal/local masking is not supported on SM80; "
++                    "express causality through the block lists and mask_mod instead."
++                )
++            if const_expr(self.num_stages != 1 or self.Q_in_regs):
++                raise NotImplementedError(
++                    "Block-sparse SM80 forward requires num_stages=1 and Q_in_regs=False."
++                )
++            if const_expr(mCuSeqlensQ is not None or mCuSeqlensK is not None):
++                raise NotImplementedError("Varlen block sparsity is not supported on SM80.")
+         self._check_type(
+             *(t.element_type if t is not None else None for t in (mQ, mK, mV, mO, mLSE, mCuSeqlensQ, mCuSeqlensK, mSeqUsedQ, mSeqUsedK))
+         )
+@@ -744,6 +760,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+             TileScheduler,
+             aux_data,
+             fastdiv_mods,
++            blocksparse_tensors,
+         ).launch(
+             grid=grid_dim,
+             block=[self.num_threads, 1, 1],
+@@ -783,6 +800,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         TileScheduler: cutlass.Constexpr[Callable],
+         aux_data: AuxData = AuxData(),
+         fastdiv_mods=None,
++        blocksparse_tensors: Optional[BlockSparseTensors] = None,
+     ):
+         # Thread index, block index
+         tidx, _, _ = cute.arch.thread_idx()
+@@ -980,35 +998,6 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+                     tSrQ_copy_view = smem_thr_copy_Q.retile(tSrQ)
+                     cute.copy(smem_thr_copy_Q, tSsQ, tSrQ_copy_view)
+ 
+-            # If Q_in_regs, we load Q, then load 1 stage of K, then (optionally) rotate Q and
+-            # read from smem_q to registers, then load V.
+-            # If !Q_in_regs, we load Q, load all stages of K & V, then (optionally) rotate Q.
+-            if const_expr(self.Q_in_regs):
+-                load_K(n_block, smem_pipe_write=0, need_predicates=True)
+-                cute.arch.cp_async_commit_group()
+-                preprocess_Q()
+-                cute.arch.barrier()  # Make sure all threads have read smem_q before loading V
+-
+-            for stage in cutlass.range_constexpr(self.num_stages):
+-                if const_expr(not self.Q_in_regs or stage > 0):
+-                    if stage == 0 or n_block - stage >= 0:
+-                        load_K(n_block - stage, smem_pipe_write=stage, need_predicates=stage == 0)
+-                    cute.arch.cp_async_commit_group()
+-                if const_expr(stage < self.num_stages - 1):
+-                    if stage == 0 or n_block - stage >= 0:
+-                        load_V(n_block - stage, smem_pipe_write=stage, need_predicates=stage == 0)
+-                    cute.arch.cp_async_commit_group()
+-            if const_expr(not self.Q_in_regs):
+-                preprocess_Q()
+-
+-            # ///////////////////////////////////////////////////////////////////////////////
+-            # Mainloop
+-            # ///////////////////////////////////////////////////////////////////////////////
+-            # Start processing of the first n-block.
+-            # For performance reason, we separate out two kinds of iterations:
+-            # those that need masking on S, and those that don't.
+-            # We need masking on S for the very last block when K and V has length not multiple of tile_n.
+-            # We also need masking on S if it's causal, for the last several blocks.
+             mask = AttentionMask(
+                 self.tile_m,
+                 self.tile_n,
+@@ -1029,45 +1018,89 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+                 fastdiv_mods=fastdiv_mods if const_expr(self.mask_mod is not None) else None,
+             )
+ 
+-            # First iteration with seqlen masking
+-            smem_pipe_read = Int32(0)
+-            smem_pipe_write = Int32(self.num_stages - 1)
+-            compute_one_n_block(
+-                n_block,
+-                smem_pipe_read,
+-                smem_pipe_write,
+-                is_first_n_block=True,
+-                seqlen=seqlen,
+-                mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=True),
+-            )
+-            smem_pipe_read = self.advance_pipeline(smem_pipe_read)
+-            smem_pipe_write = self.advance_pipeline(smem_pipe_write)
+-            # Next couple of iterations with causal masking
+-            if const_expr(self.is_causal or self.is_local):
+-                n_block_min_causal_local_mask = block_info.get_n_block_min_causal_local_mask(
+-                    seqlen, m_block, n_block_min
++            if const_expr(blocksparse_tensors is not None):
++                # Block-sparse path: iterate only over the KV blocks listed in the mask/full lists.
++                self.sparse_mainloop(
++                    blocksparse_tensors,
++                    batch_size,
++                    num_head,
++                    m_block,
++                    seqlen,
++                    load_K,
++                    compute_one_n_block,
++                    mask_fn,
++                    preprocess_Q,
+                 )
+-                for n_tile in cutlass.range(n_block_max - 1 - n_block_min_causal_local_mask, unroll=1):
+-                    n_block = n_block_max - 2 - n_tile
+-                    compute_one_n_block(
+-                        n_block,
+-                        smem_pipe_read,
+-                        smem_pipe_write,
+-                        seqlen=seqlen,
+-                        mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=True),
+-                    )
+-                    smem_pipe_read = self.advance_pipeline(smem_pipe_read)
+-                    smem_pipe_write = self.advance_pipeline(smem_pipe_write)
+-            # The remaining iterations have no masking
+-            for n_tile in cutlass.range(n_block, unroll=1):
++            else:
++                # If Q_in_regs, we load Q, then load 1 stage of K, then (optionally) rotate Q and
++                # read from smem_q to registers, then load V.
++                # If !Q_in_regs, we load Q, load all stages of K & V, then (optionally) rotate Q.
++                if const_expr(self.Q_in_regs):
++                    load_K(n_block, smem_pipe_write=0, need_predicates=True)
++                    cute.arch.cp_async_commit_group()
++                    preprocess_Q()
++                    cute.arch.barrier()  # Make sure all threads have read smem_q before loading V
++
++                for stage in cutlass.range_constexpr(self.num_stages):
++                    if const_expr(not self.Q_in_regs or stage > 0):
++                        if stage == 0 or n_block - stage >= 0:
++                            load_K(n_block - stage, smem_pipe_write=stage, need_predicates=stage == 0)
++                        cute.arch.cp_async_commit_group()
++                    if const_expr(stage < self.num_stages - 1):
++                        if stage == 0 or n_block - stage >= 0:
++                            load_V(n_block - stage, smem_pipe_write=stage, need_predicates=stage == 0)
++                        cute.arch.cp_async_commit_group()
++                if const_expr(not self.Q_in_regs):
++                    preprocess_Q()
++
++                # ///////////////////////////////////////////////////////////////////////////////
++                # Mainloop
++                # ///////////////////////////////////////////////////////////////////////////////
++                # Start processing of the first n-block.
++                # For performance reason, we separate out two kinds of iterations:
++                # those that need masking on S, and those that don't.
++                # We need masking on S for the very last block when K and V has length not multiple of tile_n.
++                # We also need masking on S if it's causal, for the last several blocks.
++
++                # First iteration with seqlen masking
++                smem_pipe_read = Int32(0)
++                smem_pipe_write = Int32(self.num_stages - 1)
+                 compute_one_n_block(
+-                    n_block - n_tile - 1, smem_pipe_read, smem_pipe_write,
+-                    seqlen=seqlen, is_first_n_block=False,
+-                    mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False)
++                    n_block,
++                    smem_pipe_read,
++                    smem_pipe_write,
++                    is_first_n_block=True,
++                    seqlen=seqlen,
++                    mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=True),
+                 )
+                 smem_pipe_read = self.advance_pipeline(smem_pipe_read)
+                 smem_pipe_write = self.advance_pipeline(smem_pipe_write)
+-            # TODO: local
++                # Next couple of iterations with causal masking
++                if const_expr(self.is_causal or self.is_local):
++                    n_block_min_causal_local_mask = block_info.get_n_block_min_causal_local_mask(
++                        seqlen, m_block, n_block_min
++                    )
++                    for n_tile in cutlass.range(n_block_max - 1 - n_block_min_causal_local_mask, unroll=1):
++                        n_block = n_block_max - 2 - n_tile
++                        compute_one_n_block(
++                            n_block,
++                            smem_pipe_read,
++                            smem_pipe_write,
++                            seqlen=seqlen,
++                            mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=True),
++                        )
++                        smem_pipe_read = self.advance_pipeline(smem_pipe_read)
++                        smem_pipe_write = self.advance_pipeline(smem_pipe_write)
++                # The remaining iterations have no masking
++                for n_tile in cutlass.range(n_block, unroll=1):
++                    compute_one_n_block(
++                        n_block - n_tile - 1, smem_pipe_read, smem_pipe_write,
++                        seqlen=seqlen, is_first_n_block=False,
++                        mask_fn=partial(mask_fn, mask_mod=self.mask_mod, mask_seqlen=False)
++                    )
++                    smem_pipe_read = self.advance_pipeline(smem_pipe_read)
++                    smem_pipe_write = self.advance_pipeline(smem_pipe_write)
++                # TODO: local
+ 
+             # normalize acc_O by row_sum and calculate the lse
+             row_scale = softmax.finalize()
+@@ -1115,12 +1148,20 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         mask_fn: Optional[Callable] = None,
+         is_first_n_block: cutlass.Constexpr = False,
+         check_inf: cutlass.Constexpr = True,
++        n_block_next: Optional[Int32] = None,
+     ):
+         """Compute one n_block of S/O.
+ 
+         This function provides different variants for processing the first n block versus
+         subsequent blocks.
++
++        If ``n_block_next`` is given (block-sparse path, num_stages == 1), the next K tile to
++        prefetch is ``n_block_next`` (skipped if negative) instead of ``n_block - 1``, and the
++        K/V loads use seqlen predicates only when the tile actually crosses seqlen_k.
+         """
++        is_sparse = const_expr(n_block_next is not None)
++        if const_expr(is_sparse):
++            assert self.num_stages == 1, "block-sparse SM80 path requires num_stages == 1"
+ 
+         def sync():
+             cute.arch.cp_async_wait_group(self.num_stages * 2 - 2)
+@@ -1134,12 +1175,18 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+ 
+         # need predicates for the first tile
+         def load_V_next():
+-            if self.num_stages == 1 or n_block - self.num_stages + 1 >= 0:
+-                load_V(
+-                    n_block - self.num_stages + 1,
+-                    smem_pipe_write,
+-                    need_predicates=is_first_n_block and self.num_stages == 1,
+-                )
++            if const_expr(is_sparse):
++                if (n_block + 1) * self.tile_n > seqlen.seqlen_k:
++                    load_V(n_block, smem_pipe_write, need_predicates=True)
++                else:
++                    load_V(n_block, smem_pipe_write, need_predicates=False)
++            else:
++                if self.num_stages == 1 or n_block - self.num_stages + 1 >= 0:
++                    load_V(
++                        n_block - self.num_stages + 1,
++                        smem_pipe_write,
++                        need_predicates=is_first_n_block and self.num_stages == 1,
++                    )
+             cute.arch.cp_async_commit_group()
+ 
+         load_V_next()
+@@ -1174,8 +1221,15 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         smem_pipe_write = self.advance_pipeline(smem_pipe_write)
+ 
+         def load_K_next():
+-            if n_block - self.num_stages >= 0:
+-                load_K(n_block - self.num_stages, smem_pipe_write, need_predicates=False)
++            if const_expr(is_sparse):
++                if n_block_next >= 0:
++                    if (n_block_next + 1) * self.tile_n > seqlen.seqlen_k:
++                        load_K(n_block_next, smem_pipe_write, need_predicates=True)
++                    else:
++                        load_K(n_block_next, smem_pipe_write, need_predicates=False)
++            else:
++                if n_block - self.num_stages >= 0:
++                    load_K(n_block - self.num_stages, smem_pipe_write, need_predicates=False)
+             cute.arch.cp_async_commit_group()
+ 
+         # wait for smem tile V for O
+@@ -1205,6 +1259,152 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         )
+         # if const_expr(self.num_stages > 1):
+         #     load_K_next()
++
++    @cute.jit
++    def sparse_block_at(
++        self,
++        i: Int32,
++        mask_cnt: Int32,
++        mask_idx: cute.Tensor,
++        full_idx: Optional[cute.Tensor],
++        total_cnt: Int32,
++    ) -> Int32:
++        """Sparse KV block index at position ``i`` of the combined visiting order, or -1.
++
++        Visiting order: the partial ("mask") list in reverse, then the full list in reverse
++        (highest KV block first, like the SM90 consumer).
++        """
++        blk = Int32(-1)
++        if i < mask_cnt:
++            blk = mask_idx[mask_cnt - 1 - i]
++        else:
++            if const_expr(full_idx is not None):
++                if i < total_cnt:
++                    blk = full_idx[total_cnt - 1 - i]
++        return blk
++
++    @cute.jit
++    def sparse_apply_mask(
++        self,
++        acc_S: cute.Tensor,
++        n_block: Int32,
++        mask_fn: Callable,
++        seqlen: SeqlenInfoQK,
++        mask_mod: cutlass.Constexpr[Optional[Callable]],
++    ):
++        """Mask one physical tile of a sparse block.
++
++        mask_mod is applied only for partial blocks (``mask_mod`` is None for full blocks).
++        seqlen masking is applied only if the tile crosses seqlen_k (runtime, CTA-uniform).
++        """
++        if (n_block + 1) * self.tile_n > seqlen.seqlen_k:
++            mask_fn(acc_S, n_block=n_block, mask_mod=mask_mod, mask_seqlen=True)
++        else:
++            if const_expr(mask_mod is not None):
++                mask_fn(acc_S, n_block=n_block, mask_mod=mask_mod, mask_seqlen=False)
++
++    @cute.jit
++    def sparse_process_block(
++        self,
++        blk_cur: Int32,
++        blk_next: Int32,
++        compute_one_n_block: Callable,
++        tile_mask_fn: Callable,
++        seqlen: SeqlenInfoQK,
++    ):
++        """Process the kv_subtile_factor physical tiles of sparse KV block ``blk_cur``.
++
++        Tiles are visited from the highest to the lowest. The K prefetch issued while the last
++        tile is computed targets the highest tile of ``blk_next`` (nothing if blk_next < 0).
++        """
++        kv_sub = self.kv_subtile_factor
++        for j in cutlass.range_constexpr(kv_sub):
++            n_block = blk_cur * kv_sub + (kv_sub - 1 - j)
++            if const_expr(j < kv_sub - 1):
++                n_block_next = n_block - 1
++            else:
++                # blk_next == -1  ->  n_block_next == -1 (no prefetch)
++                n_block_next = blk_next * kv_sub + (kv_sub - 1)
++            compute_one_n_block(
++                n_block,
++                Int32(0),
++                Int32(0),
++                seqlen=seqlen,
++                is_first_n_block=False,
++                mask_fn=tile_mask_fn,
++                n_block_next=n_block_next,
++            )
++
++    @cute.jit
++    def sparse_mainloop(
++        self,
++        blocksparse_tensors: BlockSparseTensors,
++        batch_idx: Int32,
++        head_idx: Int32,
++        m_block: Int32,
++        seqlen: SeqlenInfoQK,
++        load_K: Callable,
++        compute_one_n_block: Callable,
++        mask_fn: Callable,
++        preprocess_Q: Callable,
++    ):
++        """Block-sparse mainloop for the SM80-family forward (num_stages == 1).
++
++        Mirrors the SM90 design (block_sparse_utils.consume_block_sparse_loads): the partial
++        list (mask_block_cnt/idx, mask_mod applied) is visited first, then the full list
++        (full_block_cnt/idx, mask_mod skipped), each in reverse order. The online softmax
++        starts from row_max=-inf / row_sum=0 / acc_O=0, so no block needs to be peeled as
++        "first" (the first rescale multiplies zeros). An empty row of blocks leaves O=0 and
++        LSE=-inf.
++
++        Pipelining is the dense SM80 one: V(n) is loaded under the QK^T GEMM of tile n, and
++        K of the next visited tile under softmax + PV of tile n. The next sparse block index is
++        read from global memory at the top of each block iteration, one block ahead of its use.
++        """
++        kv_sub = self.kv_subtile_factor
++        m_block_sparse = sparse_tensor_m_block(
++            m_block,
++            self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
++            self.q_subtile_factor,
++        )
++        mask_cnt, mask_idx, full_cnt, full_idx = get_curr_blocksparse_tensors(
++            batch_idx, head_idx, m_block_sparse, blocksparse_tensors, seqlen
++        )
++        total_cnt = mask_cnt + full_cnt
++
++        # Prologue: Q was committed by the caller; issue K of the first visited tile.
++        blk_cur = self.sparse_block_at(Int32(0), mask_cnt, mask_idx, full_idx, total_cnt)
++        if total_cnt > 0:
++            n_first = blk_cur * kv_sub + (kv_sub - 1)
++            if (n_first + 1) * self.tile_n > seqlen.seqlen_k:
++                load_K(n_first, smem_pipe_write=0, need_predicates=True)
++            else:
++                load_K(n_first, smem_pipe_write=0, need_predicates=False)
++        cute.arch.cp_async_commit_group()
++        preprocess_Q()
++
++        # Partial blocks: apply mask_mod.
++        mask_tile_fn_partial = partial(
++            self.sparse_apply_mask, mask_fn=mask_fn, seqlen=seqlen, mask_mod=self.mask_mod
++        )
++        for i in cutlass.range(mask_cnt, unroll=1):
++            blk_next = self.sparse_block_at(i + 1, mask_cnt, mask_idx, full_idx, total_cnt)
++            self.sparse_process_block(
++                blk_cur, blk_next, compute_one_n_block, mask_tile_fn_partial, seqlen
++            )
++            blk_cur = blk_next
++        # Full blocks: skip mask_mod.
++        if const_expr(full_idx is not None):
++            mask_tile_fn_full = partial(
++                self.sparse_apply_mask, mask_fn=mask_fn, seqlen=seqlen, mask_mod=None
++            )
++            for i in cutlass.range(mask_cnt, total_cnt, unroll=1):
++                blk_next = self.sparse_block_at(i + 1, mask_cnt, mask_idx, full_idx, total_cnt)
++                self.sparse_process_block(
++                    blk_cur, blk_next, compute_one_n_block, mask_tile_fn_full, seqlen
++                )
++                blk_cur = blk_next
++
+     @cute.jit
+     def apply_score_mod(
+         self,
+diff --git a/flash_attn/cute/interface.py b/flash_attn/cute/interface.py
+index 9fbb5cb..a869ed3 100644
+--- a/flash_attn/cute/interface.py
++++ b/flash_attn/cute/interface.py
+@@ -303,6 +303,33 @@ def num_splits_heuristic(total_mblocks, num_SMs, num_n_blocks, max_splits):
+     return min(num_SMs // total_mblocks, max_splits, num_n_blocks)
+ 
+ 
++def _tile_size_fwd_sm8x_block_sparse(
++    head_dim: int,
++    head_dim_v: int,
++    sparse_block_size: Optional[Tuple[int, int]],
++) -> FwdConfig:
++    """Forward tile for block-sparse attention on the SM80-family path (sm80/86/89).
++
++    A coarse sparse block (e.g. 128 x 128) is covered by q_subtile_factor x kv_subtile_factor
++    tiles. Measured on RTX 4090 (hdim 128, 90% sparsity, 128 x 128 sparse blocks): 128 x 32
++    (kv_subtile_factor 4, 48 KB smem -> 2 CTAs/SM) > 64 x 64 (~2-4% slower) > 128 x 64
++    (1 CTA/SM, ~10-15% slower); 128 x 128 with 4 warps spills registers (~30x slower).
++    Without an explicit block_size the sparse KV block is assumed to equal tile_n, so keep the
++    historical 128 x 64 tile in that case.
++    """
++    if sparse_block_size is None:
++        return FwdConfig(128, 64, True, True)
++    sparse_q, sparse_kv = sparse_block_size
++    tile_m = 128 if sparse_q % 128 == 0 else 64
++    if max(head_dim, head_dim_v) <= 128 and tile_m == 128 and sparse_kv % 32 == 0:
++        tile_n = 32
++    elif sparse_kv % 64 == 0:
++        tile_n = 64
++    else:
++        tile_n = 32
++    return FwdConfig(tile_m, tile_n, True, True)
++
++
+ def _get_fwd_config(
+     *,
+     arch: int,
+@@ -340,6 +367,10 @@ def _get_fwd_config(
+                 cfg = FwdConfig(128, 64, True, True)
+         elif arch // 10 == 8:
+             cfg = FwdConfig(128, 64, True, True)  # SM80, should tune
++            if block_sparse_tensors is not None:
++                cfg = _tile_size_fwd_sm8x_block_sparse(
++                    head_dim, head_dim_v, block_sparse_tensors.block_size
++                )
+         elif arch // 10 == 9:
+             sparse_q = get_sparse_q_block_size(block_sparse_tensors, seqlen_q)
+             cfg = _tile_size_fwd_sm90(
+@@ -954,7 +985,8 @@ def _flash_attn_fwd(
+             seqlen_k=seqlen_k,
+             block_size=(tile_m, tile_n),
+             q_stage=q_stage,
+-            allow_kv_subtile=arch // 10 in [10, 11],
++            # SM80-family: a coarse sparse KV block (e.g. 128) is walked as several tile_n tiles.
++            allow_kv_subtile=arch // 10 in [8, 10, 11],
+         )
+         normalized_block_sparse_tensors = block_sparse_config.tensors
+         block_sparse_broadcast_pattern = block_sparse_config.broadcast_pattern
+@@ -1326,6 +1358,8 @@ def _flash_attn_fwd(
+                 score_mod=score_mod,
+                 mask_mod=mask_mod,
+                 has_aux_tensors=aux_tensors is not None,
++                q_subtile_factor=q_subtile_factor,
++                kv_subtile_factor=kv_subtile_factor,
+             )
+         elif arch // 10 == 9:
+             assert not is_split_kv, "SplitKV not supported on SM 9.0"
+-- 
+2.34.1
+

@@ -1,0 +1,414 @@
+From e4024e29df90cef0cc3f9c741ae21b9e99f53efa Mon Sep 17 00:00:00 2001
+From: MarsTechHAN <hansh-sz@hotmail.com>
+Date: Wed, 23 Sep 2026 23:31:05 +0800
+Subject: [PATCH 5/5] [CuTe, SM80] Low-overhead DenseBlockMask launches, 8-warp
+ SM8x backward, tests
+
+- Launch cache for SM8x DenseBlockMaskTorch forward: the first call with a
+  given signature (shapes, strides, dtypes, alignment, mask_mod object, aux
+  metadata) goes through _flash_attn_fwd and registers the compiled kernel
+  and its static launch arguments; later calls only allocate outputs and
+  launch (host time ~94 us -> ~30 us). Results are bit-identical.
+- flash_attn_func: with a DenseBlockMaskTorch and no gradient needed, call
+  _flash_attn_fwd directly instead of going through autograd.Function.
+- SM8x backward, hdim > 64: 8 warps with atom layouts (2, 4, 4) instead of
+  the SM120 setting (4 warps, (4, 4, 4)): dense backward 21.9 -> 18.5 ms at
+  S=16k, H=8, D=128 on RTX 4090 (SDPA/FA2: 18.0 ms). The dQ/dK/dV
+  postprocess now uses the main kernel's thread count on SM8x, as the fp32
+  accumulator layout follows its MMA thread partition. Block-sparse
+  backward always uses single-stage Q/dO buffers.
+- Tests: bit-exactness of lists / DenseBlockMaskTorch vs the dense kernel
+  with an equivalent mask_mod (forward O/LSE, backward dK/dV), dense-mask
+  forward/backward vs fp32 reference (uint8 codes and bool + per-column
+  partial flags), launch cache.
+---
+ flash_attn/cute/interface.py           | 179 +++++++++++++++++++++++--
+ tests/cute/test_block_sparsity_sm8x.py | 120 ++++++++++++++++-
+ 2 files changed, 290 insertions(+), 9 deletions(-)
+
+diff --git a/flash_attn/cute/interface.py b/flash_attn/cute/interface.py
+index 88e8395..e6f19b7 100644
+--- a/flash_attn/cute/interface.py
++++ b/flash_attn/cute/interface.py
+@@ -571,6 +571,78 @@ def _compute_blocks_to_batch(cu_total_blocks, num_blocks, device):
+ _compute_blocks_to_batch.compile_cache = get_jit_cache("blocks_to_batch")
+ 
+ 
++
++# ---------------------------------------------------------------------------------------------
++# SM8x DenseBlockMaskTorch launch cache.
++#
++# The generic _flash_attn_fwd spends ~70-100 us of host time per call on validation,
++# normalization and compile-key construction; with a new block mask every call and the kernel
++# itself at ~1 ms, that is ~10% of the end-to-end time. The first call with a given signature
++# goes through the full path and registers the compiled kernel plus its static launch
++# arguments; later calls with an identical signature (shapes, strides, dtypes, alignment,
++# mask_mod object, aux metadata) only allocate the outputs and launch.
++# ---------------------------------------------------------------------------------------------
++_SM8X_FAST_FWD: dict = {}
++
++
++def _sm8x_fast_fwd_key(q, k, v, bst, mask_mod, aux_tensors, aux_scalars, need_lse, extra):
++    """Signature of a DenseBlockMaskTorch forward call, or None if it is not cacheable."""
++    for t in (q, k, v):
++        if t is None or not t.is_contiguous() or t.data_ptr() % 16 != 0:
++            return None
++    bm, part = bst.block_mask, bst.partial_kv_blocks
++    if bm.stride(-1) != 1 or (part is not None and not part.is_contiguous()):
++        return None
++    aux_sig = None
++    if aux_tensors is not None:
++        aux_sig = tuple(
++            (t.dtype, t.shape, t.stride(), t.data_ptr() % 16, getattr(t, "__assumed_align__", None))
++            for t in aux_tensors
++        )
++    return (
++        q.device, q.dtype, q.shape, k.shape, v.shape,
++        bm.dtype, bm.shape, bm.stride(),
++        None if part is None else (part.dtype, part.shape),
++        tuple(bst.block_size), mask_mod, aux_sig,
++        None if aux_scalars is None else tuple(type(x) for x in aux_scalars),
++        need_lse, extra,
++    )
++
++
++class _Sm8xFastFwdEntry:
++    """Replays a registered SM8x DenseBlockMaskTorch forward launch."""
++
++    def __init__(self, compiled, call_args, i_sparse, i_aux, out_shape, out_dtype, lse_shape,
++                 need_lse, default_scale, bm_shape):
++        self.compiled = compiled
++        self.call_args = list(call_args)
++        self.i_sparse, self.i_aux = i_sparse, i_aux
++        self.out_shape, self.out_dtype = out_shape, out_dtype
++        self.lse_shape, self.need_lse = lse_shape, need_lse
++        self.default_scale = default_scale
++        self.bm_shape = bm_shape
++
++    def __call__(self, q, k, v, softmax_scale, bst, aux_tensors, aux_scalars):
++        device = q.device
++        out = torch.empty(self.out_shape, dtype=self.out_dtype, device=device)
++        lse = torch.empty(self.lse_shape, dtype=torch.float32, device=device) if self.need_lse else None
++        bm = bst.block_mask
++        if bm.dtype == torch.bool:
++            bm = bm.view(torch.uint8)
++        bm = bm.expand(self.bm_shape)
++        part = bst.partial_kv_blocks
++        if part is not None and part.dtype == torch.bool:
++            part = part.view(torch.uint8)
++        args = list(self.call_args)  # per-call copy: thread-safe, keeps no caller tensors alive
++        args[0], args[1], args[2] = q.detach(), k.detach(), v.detach()
++        args[3], args[4] = out, lse
++        args[5] = self.default_scale if softmax_scale is None else softmax_scale
++        args[self.i_sparse] = (bm, part)
++        args[self.i_aux] = AuxData(aux_tensors, tuple(aux_scalars) if aux_scalars else None)
++        self.compiled(*args)
++        return out, lse, None, None
++
++
+ def _flash_attn_fwd(
+     q: Optional[torch.Tensor],
+     k: Optional[torch.Tensor],
+@@ -633,6 +705,30 @@ def _flash_attn_fwd(
+         t is not None and t.requires_grad for t in (q, k, v, qv, learnable_sink)
+     )
+     fake_mode = is_fake_mode()
++    sm8x_fast_key = None
++    if (
++        isinstance(block_sparse_tensors, DenseBlockMaskTorch)
++        and not fake_mode
++        and qv is None and cu_seqlens_q is None and cu_seqlens_k is None
++        and seqused_q is None and seqused_k is None and page_table is None
++        and not causal and softcap in (None, 0.0) and learnable_sink is None
++        and window_size_left is None and window_size_right is None
++        and score_mod is None and num_splits == 1 and out is None and lse is None
++        and q_descale is None and k_descale is None and v_descale is None
++        and gather_kv_indices is None and scheduler_metadata is None
++        and seqlen_k_per_split is None and not disable_scheduler_metadata
++        and not gather_bwd_recompute_p and _arch is None
++        and max_seqlen_q is None and max_seqlen_k is None and min_seqlen_k is None
++    ):
++        sm8x_fast_key = _sm8x_fast_fwd_key(
++            q, k, v, block_sparse_tensors, mask_mod, aux_tensors, aux_scalars,
++            requires_grad or return_lse,
++            (tile_mn, mma_pv_is_rs, intra_wg_overlap, num_threads, pack_gqa, softmax_scale is None),
++        )
++        if sm8x_fast_key is not None:
++            entry = _SM8X_FAST_FWD.get(sm8x_fast_key)
++            if entry is not None:
++                return entry(q, k, v, softmax_scale, block_sparse_tensors, aux_tensors, aux_scalars)
+     q, k, v, qv = [maybe_contiguous(t) for t in (q, k, v, qv)]
+     assert q is not None or qv is not None
+     assert v is not None
+@@ -1681,6 +1777,12 @@ def _flash_attn_fwd(
+                     cu_total_splits_m_blocks,
+                 ])
+             _flash_attn_fwd.compile_cache[compile_key](*call_args)
++            if sm8x_fast_key is not None and use_dense_block_mask and arch // 10 == 8:
++                _sm8x_register_fast_fwd(
++                    sm8x_fast_key, _flash_attn_fwd.compile_cache[compile_key], call_args,
++                    sparse_call_arg, out, lse, normalized_block_sparse_tensors.block_mask.shape,
++                    head_dim,
++                )
+     if is_split_kv:
+         _flash_attn_fwd_combine(
+             out_partial,
+@@ -1701,6 +1803,21 @@ def _flash_attn_fwd(
+     return out, lse, p, row_max
+ 
+ 
++
++def _sm8x_register_fast_fwd(key, compiled, call_args, sparse_call_arg, out, lse, bm_shape, head_dim):
++    i_sparse = next(i for i, a in enumerate(call_args) if a is sparse_call_arg)
++    i_aux = next(i for i, a in enumerate(call_args) if isinstance(a, AuxData))
++    per_call = {0, 1, 2, 3, 4, 5, i_sparse, i_aux}
++    if any(torch.is_tensor(a) for i, a in enumerate(call_args) if i not in per_call):
++        return  # a per-call tensor we do not know how to rebuild: stay on the generic path
++    template = [None if i in per_call else a for i, a in enumerate(call_args)]
++    _SM8X_FAST_FWD[key] = _Sm8xFastFwdEntry(
++        compiled, template, i_sparse, i_aux, tuple(out.shape), out.dtype,
++        None if lse is None else tuple(lse.shape), lse is not None,
++        1.0 / math.sqrt(head_dim), tuple(bm_shape),
++    )
++
++
+ _flash_attn_fwd.compile_cache = get_jit_cache("fwd")
+ 
+ 
+@@ -2076,8 +2193,8 @@ def _flash_attn_bwd(
+         assert mask_mod is None, "mask_mod backward not supported on SM 12.0"
+         assert deterministic is False, "deterministic backward not supported on SM 12.0"
+     elif arch // 10 == 8:
+-        # SM80 family (sm80/86/89): SM80 MMA, 128 threads (4 warps). Use the SM120 tiling,
+-        # which fits the ~100 KB smem of sm86/sm89 (and trivially sm80's 164 KB).
++        # SM80 family (sm80/86/89): SM80 MMA, 64 x 64 tiles, which fit the ~100 KB smem of
++        # sm86/sm89 (and trivially sm80's 164 KB).
+         m_block_size = 64
+         n_block_size = 64
+         if head_dim <= 64:
+@@ -2086,17 +2203,31 @@ def _flash_attn_bwd(
+         else:
+             num_stages_Q = 1
+             num_stages_dO = 1
++        if block_sparse_tensors is not None:
++            # the block-sparse Q/dO prefetch is written for single-stage buffers
++            num_stages_Q = 1
++            num_stages_dO = 1
+         SdP_swapAB = False
+         dKV_swapAB = False
+         dQ_swapAB = False
+-        AtomLayoutMSdP = 4
+-        AtomLayoutNdKV = 4
+-        AtomLayoutMdQ = 4
++        if head_dim > 64:
++            # 8 warps, atom layouts (2, 4, 4): measured on RTX 4090 (hdim 128, S=16k, 8 heads)
++            # 18.5 ms dense backward vs 21.9 ms for the SM120 setting (4 warps, (4, 4, 4));
++            # SDPA/FA2 is 18.0 ms. (4, 2, 2) / (4, 4, 2) with 8 warps fail in ptxas (register
++            # allocation), AtomLayoutNdKV = 8 silently gives wrong gradients.
++            AtomLayoutMSdP = 2
++            AtomLayoutNdKV = 4
++            AtomLayoutMdQ = 4
++            num_threads = 256
++        else:
++            AtomLayoutMSdP = 4
++            AtomLayoutNdKV = 4
++            AtomLayoutMdQ = 4
++            num_threads = 128
+         V_in_regs = False
+         dQ_single_wg = False
+         cluster_size = 1
+         use_2cta_instrs = False
+-        num_threads = 128
+         if block_sparse_tensors is not None:
+             kv_subtile_factor = get_kv_subtile_factor(block_sparse_tensors, n_block_size)
+         assert score_mod is None and score_mod_bwd is None, "score_mod backward not supported on SM 8.x"
+@@ -2862,8 +2993,10 @@ def _flash_attn_bwd(
+             num_threads_post_dQ = 128 if dQ_single_wg else cfg.num_wg * 128
+             num_threads_post_dKV = cfg.num_wg * 128
+         else:
+-            num_threads_post_dQ = 128
+-            num_threads_post_dKV = 128
++            # The fp32 dQ/dK/dV accumulators are laid out by the main kernel's MMA thread
++            # partition; the postprocess must use the same thread count (SM8x may run 256).
++            num_threads_post_dQ = num_threads if arch // 10 == 8 else 128
++            num_threads_post_dKV = num_threads if arch // 10 == 8 else 128
+ 
+         _bwd_postprocess_convert(
+             dq_accum, dq, softmax_scale,
+@@ -3926,6 +4059,36 @@ def flash_attn_func(
+             "the backward will run unchunked (full-size dS transient).",
+             stacklevel=2,
+         )
++    if (
++        isinstance(block_sparse_tensors, DenseBlockMaskTorch)
++        and qv is None
++        and gather_kv_indices is None
++        and learnable_sink is None
++        and not (
++            torch.is_grad_enabled()
++            and any(t is not None and t.requires_grad for t in (q, k, v))
++        )
++    ):
++        # Inference: skip the autograd.Function bookkeeping (~30 us of host time per call).
++        out, lse, _, _ = _flash_attn_fwd(
++            q,
++            k,
++            v,
++            softmax_scale=softmax_scale,
++            causal=causal,
++            window_size_left=window_size[0],
++            window_size_right=window_size[1],
++            softcap=softcap,
++            num_splits=num_splits,
++            pack_gqa=pack_gqa,
++            score_mod=score_mod,
++            mask_mod=mask_mod,
++            aux_tensors=aux_tensors,
++            aux_scalars=aux_scalars,
++            block_sparse_tensors=block_sparse_tensors,
++            return_lse=return_lse,
++        )
++        return out, lse
+     return FlashAttnFunc.apply(
+         q,
+         k,
+diff --git a/tests/cute/test_block_sparsity_sm8x.py b/tests/cute/test_block_sparsity_sm8x.py
+index 6698da7..b714e86 100644
+--- a/tests/cute/test_block_sparsity_sm8x.py
++++ b/tests/cute/test_block_sparsity_sm8x.py
+@@ -14,9 +14,10 @@ import cutlass.cute as cute
+ from flash_attn.cute import utils as fa_utils
+ from flash_attn.cute.block_sparsity import (
+     BlockSparseTensorsTorch,
++    DenseBlockMaskTorch,
+     block_sparse_tensors_fwd_to_bwd,
+ )
+-from flash_attn.cute.interface import _flash_attn_fwd, flash_attn_func
++from flash_attn.cute.interface import _flash_attn_bwd, _flash_attn_fwd, flash_attn_func
+ 
+ IS_SM8X = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 8
+ pytestmark = pytest.mark.skipif(not IS_SM8X, reason="SM8x-only test")
+@@ -152,3 +153,120 @@ def test_block_sparse_bwd_sm8x_requires_bwd_lists():
+     out = flash_attn_func(q, k, v, block_sparse_tensors=bst)[0]
+     with pytest.raises(ValueError, match="block_sparse_tensors_bwd"):
+         out.sum().backward()
++
++
++@cute.jit
++def block_code_mask_mod(batch, head, m_idx, n_idx, seqlen_info, aux_tensors):
++    """Dense-kernel equivalent of a block-sparse run: aux[1] holds block codes [H, M, N] int32
++    (0 skip, 1 full, 2 partial -> key validity aux[0])."""
++    valid = aux_tensors[0]
++    codes = aux_tensors[1]
++    c = codes[head[0], m_idx[0] // BLOCK, n_idx[0] // BLOCK]
++    keep = (c == 1) or (c == 2 and valid[n_idx[0]] != 0)
++    return fa_utils.scalar_to_ssa(keep, cutlass.Boolean)
++
++
++def _codes_to_lists(codes, which):
++    sel = (codes == which).contiguous()
++    cnt = sel.sum(-1, dtype=torch.int32)
++    idx = torch.argsort(sel.to(torch.int8), dim=-1, descending=True, stable=True)
++    return cnt, idx.to(torch.int32).contiguous()
++
++
++def _block_codes(H, M, N, k, p_partial, seed):
++    torch.manual_seed(seed)
++    bst, bm = make_pattern(H, M, N, k, p_partial, empty_rows=[(0, M - 1)])
++    return bst, bm.to(torch.int32)
++
++
++@pytest.mark.parametrize("seqlen", [1000, 2048])
++@pytest.mark.parametrize("tile_mn", [(128, 32), (128, 64), (64, 64)])
++def test_block_sparse_fwd_sm8x_bitwise_vs_dense(seqlen, tile_mn):
++    """Lists and DenseBlockMaskTorch runs are bit-identical to the dense kernel with the same
++    pattern expressed as a mask_mod (same tile): blocks are visited in the dense order."""
++    H, D = 2, 128
++    M = N = (seqlen + BLOCK - 1) // BLOCK
++    q, k, v = [torch.randn(1, seqlen, H, D, device="cuda", dtype=torch.bfloat16) for _ in range(3)]
++    valid = (torch.rand(seqlen, device="cuda") < 0.6).to(torch.int32)
++    bst, codes = _block_codes(H, M, N, 3, 0.3, 1)
++    ref_o, ref_lse, *_ = _flash_attn_fwd(q, k, v, tile_mn=tile_mn, return_lse=True,
++                                         mask_mod=block_code_mask_mod, aux_tensors=[valid, codes])
++    for masks in (bst, DenseBlockMaskTorch(codes.to(torch.uint8)[None])):
++        o, lse, *_ = _flash_attn_fwd(q, k, v, tile_mn=tile_mn, return_lse=True,
++                                     block_sparse_tensors=masks, mask_mod=key_valid_mask_mod,
++                                     aux_tensors=[valid])
++        assert torch.equal(o, ref_o)
++        assert torch.equal(lse, ref_lse)
++
++
++@pytest.mark.parametrize("seqlen", [946, 2048])
++def test_dense_block_mask_fwd_bwd_sm8x(seqlen):
++    H, D = 2, 128
++    M = N = (seqlen + BLOCK - 1) // BLOCK
++    q, k, v = [
++        torch.randn(1, seqlen, H, D, device="cuda", dtype=torch.bfloat16, requires_grad=True)
++        for _ in range(3)
++    ]
++    do = torch.randn(1, seqlen, H, D, device="cuda", dtype=torch.bfloat16)
++    valid = (torch.rand(seqlen, device="cuda") < 0.6).to(torch.int32)
++    _, codes = _block_codes(H, M, N, 3, 0.3, 2)
++    # bool mask + per-KV-column partial flags must equal the uint8 code form
++    col_partial = torch.zeros(N, dtype=torch.bool, device="cuda")
++    col_partial[::2] = True
++    codes_col = torch.where(codes != 0, torch.where(col_partial, 2, 1), 0).to(torch.uint8)
++    for mask, bm in (
++        (DenseBlockMaskTorch(codes.to(torch.uint8)[None]), codes),
++        (DenseBlockMaskTorch((codes != 0)[None], col_partial), codes_col.to(torch.int32)),
++    ):
++        out, lse = flash_attn_func(q, k, v, block_sparse_tensors=mask, mask_mod=key_valid_mask_mod,
++                                   aux_tensors=[valid], return_lse=True)
++        grads = torch.autograd.grad(out, (q, k, v), do)
++        qf, kf, vf = [x.detach().float().requires_grad_() for x in (q, k, v)]
++        ref = reference(qf, kf, vf, bm.to(torch.int8), valid)
++        ref_grads = torch.autograd.grad(ref, (qf, kf, vf), do.float())
++        assert (out.float() - ref).abs().max().item() < 2e-2
++        assert torch.isinf(lse[0, 0, (M - 1) * BLOCK:]).all()  # empty row
++        for g, rg in zip(grads, ref_grads):
++            assert (g.float() - rg).abs().max().item() < 2e-2 * max(1.0, rg.abs().max().item())
++
++
++def test_block_sparse_bwd_sm8x_bitwise_dkdv_vs_dense():
++    """dK/dV of the sparse backward (lists and DenseBlockMaskTorch) are bit-identical to the
++    dense backward with the equivalent mask_mod (dQ uses fp32 atomics)."""
++    S, H, D = 2048, 2, 128
++    M = N = S // BLOCK
++    q, k, v, do = [torch.randn(1, S, H, D, device="cuda", dtype=torch.bfloat16) for _ in range(4)]
++    valid = (torch.rand(S, device="cuda") < 0.6).to(torch.int32)
++    bst, codes = _block_codes(H, M, N, 4, 0.3, 3)
++    out, lse, *_ = _flash_attn_fwd(q, k, v, tile_mn=(128, 32), return_lse=True,
++                                   mask_mod=block_code_mask_mod, aux_tensors=[valid, codes])
++    ref = _flash_attn_bwd(q, k, v, out, do, lse, mask_mod=block_code_mask_mod,
++                          aux_tensors=[valid, codes])
++    for masks in (block_sparse_tensors_fwd_to_bwd(bst, M, N),
++                  DenseBlockMaskTorch(codes.to(torch.uint8)[None])):
++        dq, dk, dv = _flash_attn_bwd(q, k, v, out, do, lse, mask_mod=key_valid_mask_mod,
++                                     aux_tensors=[valid], block_sparse_tensors=masks)
++        assert torch.equal(dk, ref[1]) and torch.equal(dv, ref[2])
++        assert (dq.float() - ref[0].float()).abs().max().item() < 1e-2
++
++
++def test_dense_block_mask_launch_cache_sm8x():
++    """Repeated calls hit the SM8x launch cache and stay bit-identical to the generic path."""
++    from flash_attn.cute import interface
++
++    S, H, D = 2048, 2, 128
++    M = N = S // BLOCK
++    q, k, v = [torch.randn(1, S, H, D, device="cuda", dtype=torch.bfloat16) for _ in range(3)]
++    valid = (torch.rand(S, device="cuda") < 0.6).to(torch.int32)
++    for seed in range(3):
++        _, codes = _block_codes(H, M, N, 3, 0.3, 10 + seed)
++        mask = DenseBlockMaskTorch(codes.to(torch.uint8)[None])
++        interface._SM8X_FAST_FWD.clear()
++        o_ref = flash_attn_func(q, k, v, block_sparse_tensors=mask, mask_mod=key_valid_mask_mod,
++                                aux_tensors=[valid])[0]  # generic path, registers the launch
++        assert len(interface._SM8X_FAST_FWD) == 1
++        for _ in range(2):
++            o = flash_attn_func(q, k, v, block_sparse_tensors=mask, mask_mod=key_valid_mask_mod,
++                                aux_tensors=[valid])[0]  # cached launch
++            assert torch.equal(o, o_ref)
++        assert len(interface._SM8X_FAST_FWD) == 1
+-- 
+2.34.1
+

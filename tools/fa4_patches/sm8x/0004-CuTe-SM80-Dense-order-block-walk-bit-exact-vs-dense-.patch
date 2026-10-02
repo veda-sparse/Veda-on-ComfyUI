@@ -1,0 +1,1096 @@
+From e9be976d730af751f8d4adede0da2a73a150bea3 Mon Sep 17 00:00:00 2001
+From: MarsTechHAN <hansh-sz@hotmail.com>
+Date: Wed, 23 Sep 2026 22:51:58 +0800
+Subject: [PATCH 4/5] [CuTe, SM80] Dense-order block walk (bit-exact vs dense)
+ + DenseBlockMaskTorch input
+
+- Walk the partial and full lists as ONE merged sequence in the dense loop's
+  order (descending KV blocks in forward, ascending Q blocks in backward),
+  with a per-block partial flag checked inside the mask function instead of
+  two separate loops. A sparse run is now bit-identical to the dense kernel
+  with an equivalent mask_mod (forward O/LSE; backward dK/dV -- dQ uses fp32
+  atomics). Also halves the unrolled loop bodies.
+- New DenseBlockMaskTorch(block_mask [B|1, H|1, M, N] bool/uint8 with
+  0 skip / 1 full / 2 partial, optional partial_kv_blocks [N], block_size)
+  accepted as block_sparse_tensors on SM8x. Each CTA turns its row (forward)
+  or column (backward) into a 512 B smem bitmask (ballot) and walks set
+  bits, so no index lists and no transposed Q-direction lists are needed;
+  FlashAttnFunc reuses the same mask for backward. Up to 2048 blocks/side.
+---
+ flash_attn/cute/block_sparse_utils.py | 184 ++++++++++++++++++++++++++
+ flash_attn/cute/block_sparsity.py     | 110 +++++++++++++++
+ flash_attn/cute/flash_bwd.py          | 167 ++++++++++++++---------
+ flash_attn/cute/flash_fwd.py          | 172 ++++++++++++++----------
+ flash_attn/cute/interface.py          |  88 ++++++++++--
+ 5 files changed, 580 insertions(+), 141 deletions(-)
+
+diff --git a/flash_attn/cute/block_sparse_utils.py b/flash_attn/cute/block_sparse_utils.py
+index c17e82a..3682ebe 100644
+--- a/flash_attn/cute/block_sparse_utils.py
++++ b/flash_attn/cute/block_sparse_utils.py
+@@ -616,6 +616,190 @@ def consume_block_sparse_loads(
+     return kv_consumer_state, O_should_accumulate, processed_any
+ 
+ 
++# ---------------------------------------------------------------------------------------------
++# SM80-family block iteration (forward: descending KV blocks, backward: ascending Q blocks).
++#
++# Both input formats are walked as one merged, monotonic sequence of (block, is_partial), i.e.
++# in the same order as the dense SM80 kernels, so that a sparse run is bit-identical to the
++# dense kernel with an equivalent mask_mod (skipped tiles would only add exact zeros there).
++# The cursor state is four Int32 values so the loop can carry it without tuple pytrees.
++# ---------------------------------------------------------------------------------------------
++
++
++@cute.jit
++def build_block_bitmask_sm80(
++    mask_line: cute.Tensor,
++    partial_vec: Optional[cute.Tensor],
++    partial_all: Optional[Int32],
++    sKeep: cute.Tensor,
++    sPart: cute.Tensor,
++    tidx: Int32,
++    num_threads: cutlass.Constexpr[int],
++):
++    """Turn one uint8 row/column of a DenseBlockMask into smem bitmasks (1 bit per block).
++
++    mask_line: [L] uint8 (0 skip, 1 full, 2 partial). partial_vec: optional [L] uint8 that
++    marks blocks as partial per position (forward rows); partial_all: optional scalar that
++    marks every block partial (backward column of a partial KV block). Caller must barrier.
++    Returns the number of 32-bit words.
++    """
++    num_blocks = cute.size(mask_line.shape[0])
++    num_words = (num_blocks + 31) // 32
++    warp_idx = tidx // 32
++    lane = tidx % 32
++    for w in cutlass.range(warp_idx, num_words, num_threads // 32, unroll=1):
++        i = w * 32 + lane
++        code = Int32(0)
++        pflag = Int32(0)
++        if i < num_blocks:
++            code = Int32(mask_line[i])
++            if const_expr(partial_vec is not None):
++                pflag = Int32(partial_vec[i])
++        if const_expr(partial_all is not None):
++            pflag = pflag | partial_all
++        keep = code != 0
++        part = keep & ((code == 2) | (pflag != 0))
++        keep_bits = cute.arch.vote_ballot_sync(keep)
++        part_bits = cute.arch.vote_ballot_sync(part)
++        if lane == 0:
++            sKeep[w] = keep_bits
++            sPart[w] = part_bits
++    return num_words
++
++
++@cute.jit
++def bitmask_count_sm80(sKeep: cute.Tensor, num_words: Int32) -> Int32:
++    total = Int32(0)
++    for w in cutlass.range(num_words, unroll=1):
++        total = total + cute.arch.popc(sKeep[w])
++    return total
++
++
++@cute.jit
++def bitmask_pop_desc_sm80(sKeep: cute.Tensor, sPart: cute.Tensor, s0, s1, s2, s3):
++    """Next block in descending order. State: s0 = word index, s1 = unvisited bits of it.
++    Start with (num_words, 0, 0, 0). Returns (block or -1, is_partial, s0..s3)."""
++    w = s0
++    bits = s1
++    while (bits == 0) & (w > 0):
++        w = w - 1
++        bits = sKeep[w]
++    blk = Int32(-1)
++    part = Int32(0)
++    if bits != 0:
++        hb = Int32(cute.arch.bfind(cutlass.Uint32(bits)))
++        blk = w * 32 + hb
++        bits = bits & ~(Int32(1) << hb)
++        part = (sPart[w] >> hb) & Int32(1)
++    return blk, part, w, bits, s2, s3
++
++
++@cute.jit
++def bitmask_pop_asc_sm80(
++    sKeep: cute.Tensor, sPart: cute.Tensor, num_words: Int32, s0, s1, s2, s3
++):
++    """Next block in ascending order. Start with (-1, 0, 0, 0)."""
++    w = s0
++    bits = s1
++    while (bits == 0) & (w < num_words - 1):
++        w = w + 1
++        bits = sKeep[w]
++    blk = Int32(-1)
++    part = Int32(0)
++    if bits != 0:
++        low = bits & (Int32(0) - bits)
++        lb = Int32(cute.arch.bfind(cutlass.Uint32(low)))
++        blk = w * 32 + lb
++        bits = bits ^ low
++        part = (sPart[w] >> lb) & Int32(1)
++    return blk, part, w, bits, s2, s3
++
++
++@cute.jit
++def list_head_desc_sm80(cnt: Int32, idx: Optional[cute.Tensor], consumed: Int32) -> Int32:
++    head = Int32(-1)
++    if const_expr(idx is not None):
++        if consumed < cnt:
++            head = idx[cnt - 1 - consumed]
++    return head
++
++
++@cute.jit
++def list_pop_desc_sm80(
++    mask_cnt: Int32,
++    mask_idx: cute.Tensor,
++    full_cnt: Int32,
++    full_idx: Optional[cute.Tensor],
++    s0,
++    s1,
++    s2,
++    s3,
++):
++    """Merge the (ascending) partial and full lists into one descending walk.
++    State: s0/s1 = entries consumed from the partial/full list, s2/s3 = their current heads
++    (-1 when exhausted). Start with (0, 0, head(partial), head(full))."""
++    im = s0
++    jf = s1
++    cm = s2
++    cf = s3
++    blk = Int32(-1)
++    part = Int32(0)
++    if cm > cf:
++        blk = cm
++        part = Int32(1)
++        im = im + 1
++        cm = list_head_desc_sm80(mask_cnt, mask_idx, im)
++    else:
++        if cf >= 0:
++            blk = cf
++            jf = jf + 1
++            cf = list_head_desc_sm80(full_cnt, full_idx, jf)
++    return blk, part, im, jf, cm, cf
++
++
++_ASC_EXHAUSTED = 1 << 30
++
++
++@cute.jit
++def list_head_asc_sm80(cnt: Int32, idx: Optional[cute.Tensor], consumed: Int32) -> Int32:
++    head = Int32(_ASC_EXHAUSTED)
++    if const_expr(idx is not None):
++        if consumed < cnt:
++            head = idx[consumed]
++    return head
++
++
++@cute.jit
++def list_pop_asc_sm80(
++    mask_cnt: Int32,
++    mask_idx: cute.Tensor,
++    full_cnt: Int32,
++    full_idx: Optional[cute.Tensor],
++    s0,
++    s1,
++    s2,
++    s3,
++):
++    """Ascending merge (backward). Heads are _ASC_EXHAUSTED when a list is exhausted."""
++    im = s0
++    jf = s1
++    cm = s2
++    cf = s3
++    blk = Int32(-1)
++    part = Int32(0)
++    if cm < cf:
++        blk = cm
++        part = Int32(1)
++        im = im + 1
++        cm = list_head_asc_sm80(mask_cnt, mask_idx, im)
++    else:
++        if cf < _ASC_EXHAUSTED:
++            blk = cf
++            jf = jf + 1
++            cf = list_head_asc_sm80(full_cnt, full_idx, jf)
++    return blk, part, im, jf, cm, cf
++
++
+ @cute.jit
+ def split_block_range(block_count, split_idx: Int32, num_splits: Int32):
+     """Return the half-open block-list range assigned to one SplitKV partition."""
+diff --git a/flash_attn/cute/block_sparsity.py b/flash_attn/cute/block_sparsity.py
+index 43314f7..e4aa396 100644
+--- a/flash_attn/cute/block_sparsity.py
++++ b/flash_attn/cute/block_sparsity.py
+@@ -36,6 +36,116 @@ class BlockSparseTensors(NamedTuple):
+         return BlockSparseTensors(*new_fields)
+ 
+ 
++class DenseBlockMask(NamedTuple):
++    """Kernel-side dense block mask (SM80-family only), see DenseBlockMaskTorch."""
++
++    block_mask: cute.Tensor
++    partial_kv_blocks: cute.Tensor | None = None
++
++    def __new_from_mlir_values__(self, values):
++        new_fields = []
++        idx = 0
++        for original in self:
++            if original is None:
++                new_fields.append(None)
++            else:
++                new_fields.append(values[idx])
++                idx += 1
++        return DenseBlockMask(*new_fields)
++
++
++# Longest block row/column a DenseBlockMask may have (it is turned into a smem bitmask of
++# DENSE_BLOCK_MASK_MAX_BLOCKS bits per class): 2048 blocks = 262144 tokens at block size 128.
++DENSE_BLOCK_MASK_MAX_BLOCKS = 2048
++
++
++class DenseBlockMaskTorch(NamedTuple):
++    """Dense block mask, consumed directly by the SM80-family kernels (no index lists).
++
++    block_mask: [B or 1, H or 1, num_q_blocks, num_kv_blocks], torch.bool or torch.uint8.
++        0 = skip, nonzero = compute the block. 1 = full block (mask_mod skipped),
++        2 = partial block (mask_mod applied).
++    partial_kv_blocks: optional [num_kv_blocks] torch.bool/torch.uint8; nonzero marks every
++        computed block of that KV column as partial (e.g. KV tiles containing padding).
++    block_size: (sparse_block_q, sparse_block_kv), e.g. (128, 128).
++
++    Forward reads row (b, h, q_block); backward reads column (b, h, :, kv_block) of the same
++    tensor, so no transposed (Q-direction) lists are needed. Blocks are visited in the same
++    order as the dense kernel (descending KV in forward, ascending Q in backward), so a
++    DenseBlockMaskTorch run is bit-identical to the dense kernel with an equivalent mask_mod.
++    """
++
++    block_mask: torch.Tensor
++    partial_kv_blocks: torch.Tensor | None = None
++    block_size: tuple[int, int] = (128, 128)
++
++
++def normalize_dense_block_mask(
++    mask: DenseBlockMaskTorch,
++    *,
++    batch_size: int,
++    num_head: int,
++    seqlen_q: int,
++    seqlen_k: int,
++    tile_m: int,
++    tile_n: int,
++) -> tuple[DenseBlockMaskTorch, int, int, Tuple[Tuple[bool, ...], ...]]:
++    """Validate a DenseBlockMaskTorch. Returns (normalized, q_subtile, kv_subtile, pattern)."""
++    block_q, block_kv = mask.block_size
++    if block_q % tile_m != 0 or block_kv % tile_n != 0:
++        raise ValueError(
++            f"DenseBlockMaskTorch block_size={mask.block_size} must be a multiple of the "
++            f"kernel tile ({tile_m}, {tile_n})."
++        )
++    bm = mask.block_mask
++    if bm.dtype == torch.bool:
++        bm = bm.view(torch.uint8)
++    if bm.dtype != torch.uint8:
++        raise ValueError("DenseBlockMaskTorch.block_mask must be torch.bool or torch.uint8")
++    if not bm.is_cuda:
++        raise ValueError("DenseBlockMaskTorch.block_mask must live on CUDA")
++    num_q_blocks, num_kv_blocks = ceildiv(seqlen_q, block_q), ceildiv(seqlen_k, block_kv)
++    expected = (batch_size, num_head, num_q_blocks, num_kv_blocks)
++    if bm.ndim != 4:
++        raise ValueError(f"DenseBlockMaskTorch.block_mask must be 4D {expected}, got {bm.shape}")
++    if max(num_q_blocks, num_kv_blocks) > DENSE_BLOCK_MASK_MAX_BLOCKS:
++        raise ValueError(
++            f"DenseBlockMaskTorch supports at most {DENSE_BLOCK_MASK_MAX_BLOCKS} blocks per "
++            f"side, got {bm.shape[2:]}"
++        )
++    if bm.stride(-1) != 1:
++        bm = bm.contiguous()
++    bm = _expand_sparsity_tensor(bm, expected, "block_mask", "DenseBlockMaskTorch", None)
++    part = mask.partial_kv_blocks
++    if part is not None:
++        if part.dtype == torch.bool:
++            part = part.view(torch.uint8)
++        if part.dtype != torch.uint8 or part.shape != (num_kv_blocks,):
++            raise ValueError(
++                f"partial_kv_blocks must be bool/uint8 of shape ({num_kv_blocks},), "
++                f"got {part.dtype} {tuple(part.shape)}"
++            )
++        part = part.contiguous()
++    pattern = (("dense",), get_broadcast_dims(bm), part is None)
++    return (
++        DenseBlockMaskTorch(bm, part, mask.block_size),
++        block_q // tile_m,
++        block_kv // tile_n,
++        pattern,
++    )
++
++
++def to_cute_dense_block_mask(
++    mask: DenseBlockMaskTorch, enable_tvm_ffi: bool = True
++) -> DenseBlockMask:
++    return DenseBlockMask(
++        to_cute_tensor(mask.block_mask, assumed_align=1, leading_dim=-1, enable_tvm_ffi=enable_tvm_ffi),
++        to_cute_tensor(mask.partial_kv_blocks, assumed_align=1, leading_dim=0, enable_tvm_ffi=enable_tvm_ffi)
++        if mask.partial_kv_blocks is not None
++        else None,
++    )
++
++
+ class BlockSparseTensorsTorch(NamedTuple):
+     mask_block_cnt: torch.Tensor
+     mask_block_idx: torch.Tensor
+diff --git a/flash_attn/cute/flash_bwd.py b/flash_attn/cute/flash_bwd.py
+index 8e1490b..4fc5991 100644
+--- a/flash_attn/cute/flash_bwd.py
++++ b/flash_attn/cute/flash_bwd.py
+@@ -27,7 +27,15 @@ from flash_attn.cute.tile_scheduler import SingleTileScheduler, SingleTileVarlen
+ from flash_attn.cute.block_sparsity import BlockSparseTensors
+ from flash_attn.cute.utils import AuxData
+ from cutlass.cute import FastDivmodDivisorV2
+-from flash_attn.cute.block_sparse_utils import get_block_sparse_iteration_info_bwd
++from flash_attn.cute.block_sparsity import DenseBlockMask, DENSE_BLOCK_MASK_MAX_BLOCKS
++from flash_attn.cute.block_sparse_utils import (
++    get_block_sparse_iteration_info_bwd,
++    build_block_bitmask_sm80,
++    bitmask_count_sm80,
++    bitmask_pop_asc_sm80,
++    list_head_asc_sm80,
++    list_pop_asc_sm80,
++)
+ 
+ 
+ class FlashAttentionBackwardSm80:
+@@ -380,6 +388,27 @@ class FlashAttentionBackwardSm80:
+             sP: sP_struct
+             sdS: sdS_struct
+ 
++        if cutlass.const_expr(getattr(self, "use_dense_block_mask", False)):
++            # keep + partial bitmasks of one DenseBlockMask column (512 B for 2048 blocks)
++            sBits_struct = cute.struct.Align[
++                cute.struct.MemRange[cutlass.Int32, 2 * (DENSE_BLOCK_MASK_MAX_BLOCKS // 32)], 16
++            ]
++            assert not self.share_QV_smem
++
++            @cute.struct
++            class SharedStorageSeparateQVBits:
++                sK: sK_struct
++                sV: sV_struct
++                sQ: sQ_struct
++                sdO: sdO_struct
++                sLSE: sLSE_struct
++                sdPsum: sdPsum_struct
++                sP: sP_struct
++                sdS: sdS_struct
++                sBlockBits: sBits_struct
++
++            return SharedStorageSeparateQVBits
++
+         return SharedStorageSeparateQV if cutlass.const_expr(not self.share_QV_smem) else SharedStorageSharedQV
+ 
+     @cute.jit
+@@ -405,7 +434,7 @@ class FlashAttentionBackwardSm80:
+         mdK_semaphore: Optional[cute.Tensor] = None,
+         mdV_semaphore: Optional[cute.Tensor] = None,
+         aux_data: AuxData = AuxData(),
+-        blocksparse_tensors: Optional[BlockSparseTensors] = None,
++        blocksparse_tensors=None,  # BlockSparseTensors | DenseBlockMask | None
+         mCuTotalMBlocks: Optional[cute.Tensor] = None,
+         # Always keep stream as the last parameter (EnvStream: obtained implicitly via TVM FFI).
+         stream: cuda.CUstream = None,
+@@ -431,6 +460,7 @@ class FlashAttentionBackwardSm80:
+             assume_tensor_aligned(t) for t in (mQ, mK, mV, mdO, mLSE, mdPsum, mdQaccum, mdK, mdV)
+         ]
+         self.varlen_q = (mCuSeqlensQ is not None)
++        self.use_dense_block_mask = isinstance(blocksparse_tensors, DenseBlockMask)
+         self._setup_attributes()
+         SharedStorage = self._get_shared_storage_cls()
+         tiled_mma_sdp, tiled_mma_dkv, tiled_mma_dq = self._get_tiled_mma()
+@@ -562,7 +592,7 @@ class FlashAttentionBackwardSm80:
+         TileScheduler: cutlass.Constexpr[Callable],
+         aux_data: AuxData = AuxData(),
+         fastdiv_mods=None,
+-        blocksparse_tensors: Optional[BlockSparseTensors] = None,
++        blocksparse_tensors=None,  # BlockSparseTensors | DenseBlockMask | None
+     ):
+         # Thread index, block index
+         tidx, _, _ = cute.arch.thread_idx()
+@@ -869,6 +899,12 @@ class FlashAttentionBackwardSm80:
+                     load_dO_dPsum,
+                     compute_one_m_block,
+                     mask_fn,
++                    storage.sBlockBits.get_tensor(
++                        cute.make_layout(2 * (DENSE_BLOCK_MASK_MAX_BLOCKS // 32))
++                    )
++                    if cutlass.const_expr(self.use_dense_block_mask)
++                    else None,
++                    tidx,
+                 )
+             elif m_block_min < m_block_max:
+                 # ///////////////////////////////////////////////////////////////////////////////
+@@ -1154,25 +1190,6 @@ class FlashAttentionBackwardSm80:
+             # Sync to avoid loading Q to smem_q, which overlaps with smem_v
+             cute.arch.barrier()
+ 
+-    @cute.jit
+-    def sparse_block_at_bwd(
+-        self,
+-        i: cutlass.Int32,
+-        q_cnt: cutlass.Int32,
+-        q_idx: cute.Tensor,
+-        full_idx: Optional[cute.Tensor],
+-        total_cnt: cutlass.Int32,
+-    ) -> cutlass.Int32:
+-        """Sparse Q block at position ``i`` (partial list, then full list, ascending), or -1."""
+-        blk = cutlass.Int32(-1)
+-        if i < q_cnt:
+-            blk = q_idx[i]
+-        else:
+-            if cutlass.const_expr(full_idx is not None):
+-                if i < total_cnt:
+-                    blk = full_idx[i - q_cnt]
+-        return blk
+-
+     @cute.jit
+     def sparse_apply_mask_bwd(
+         self,
+@@ -1181,28 +1198,34 @@ class FlashAttentionBackwardSm80:
+         mask_fn: Callable,
+         n_block: cutlass.Int32,
+         seqlen: SeqlenInfoQK,
+-        mask_mod: cutlass.Constexpr[Optional[Callable]],
++        is_partial: cutlass.Int32,
+     ):
+         """Full tiles: seqlen mask only (as the dense loop). Partial tiles: mask_mod, plus seqlen
+         masking (and aux index wrapping) only if the tile crosses seqlen_q / seqlen_k."""
+-        if cutlass.const_expr(mask_mod is None):
++        if cutlass.const_expr(self.mask_mod is None):
+             mask_fn(acc_S, m_block=m_block, mask_mod=None, mask_seqlen=True)
+         else:
+-            if (m_block + 1) * self.m_block_size > seqlen.seqlen_q or (
+-                n_block + 1
+-            ) * self.n_block_size > seqlen.seqlen_k:
+-                mask_fn(acc_S, m_block=m_block, mask_mod=mask_mod, mask_seqlen=True)
++            if is_partial != 0:
++                if (m_block + 1) * self.m_block_size > seqlen.seqlen_q or (
++                    n_block + 1
++                ) * self.n_block_size > seqlen.seqlen_k:
++                    mask_fn(acc_S, m_block=m_block, mask_mod=self.mask_mod, mask_seqlen=True)
++                else:
++                    mask_fn(acc_S, m_block=m_block, mask_mod=self.mask_mod, mask_seqlen=False)
+             else:
+-                mask_fn(acc_S, m_block=m_block, mask_mod=mask_mod, mask_seqlen=False)
++                mask_fn(acc_S, m_block=m_block, mask_mod=None, mask_seqlen=True)
+ 
+     @cute.jit
+     def sparse_process_q_block_bwd(
+         self,
+         blk_cur: cutlass.Int32,
++        part_cur: cutlass.Int32,
+         blk_next: cutlass.Int32,
+         m_block_max: cutlass.Int32,
+         compute_one_m_block: Callable,
+-        tile_mask_fn: Callable,
++        mask_fn: Callable,
++        n_block: cutlass.Int32,
++        seqlen: SeqlenInfoQK,
+     ):
+         """Process the q_subtile_factor m tiles of sparse Q block ``blk_cur`` (ascending).
+ 
+@@ -1210,6 +1233,10 @@ class FlashAttentionBackwardSm80:
+         then targets the first m tile of ``blk_next`` (nothing if blk_next < 0).
+         """
+         q_sub = self.q_subtile_factor
++        tile_mask_fn = partial(
++            self.sparse_apply_mask_bwd, mask_fn=mask_fn, n_block=n_block, seqlen=seqlen,
++            is_partial=part_cur,
++        )
+         m_block_next_blk = blk_next * q_sub  # negative iff blk_next == -1
+         for j in cutlass.range_constexpr(q_sub):
+             m_block = blk_cur * q_sub + j
+@@ -1233,7 +1260,7 @@ class FlashAttentionBackwardSm80:
+     @cute.jit
+     def sparse_mainloop_bwd(
+         self,
+-        blocksparse_tensors: BlockSparseTensors,
++        blocksparse_tensors,
+         batch_idx: cutlass.Int32,
+         head_idx: cutlass.Int32,
+         n_block: cutlass.Int32,
+@@ -1244,53 +1271,71 @@ class FlashAttentionBackwardSm80:
+         load_dO_dPsum: Callable,
+         compute_one_m_block: Callable,
+         mask_fn: Callable,
++        sBlockBits: Optional[cute.Tensor],
++        tidx: cutlass.Int32,
+     ):
+-        """Block-sparse backward mainloop (Q-direction lists, num_stages_Q == num_stages_dO == 1).
++        """Block-sparse backward mainloop (num_stages_Q == num_stages_dO == 1).
+ 
+         The CTA owns KV tile ``n_block``; its sparse KV block is n_block // kv_subtile_factor.
+-        Q blocks of the partial list (mask_mod applied) are visited first, then the full list
+-        (mask_mod skipped), each in ascending order as in the SM90 consumer. Each sparse Q block
++        Input is either BlockSparseTensors with Q-direction lists (block_sparse_tensors_bwd:
++        partial list with mask_mod, full list without) or the forward's DenseBlockMask, whose
++        column is read directly (no transposed lists needed). Q blocks are walked as ONE merged
++        ascending sequence -- the order of the dense loop -- with a per-block partial flag, so
++        dK/dV are bit-identical to the dense kernel with an equivalent mask_mod (dQ goes through
++        fp32 atomics and is not bit-reproducible even for the dense kernel). Each sparse Q block
+         is q_subtile_factor m tiles. Q/LSE and dO/dPsum of the next visited m tile are
+-        cp.async-prefetched under the dK / dQ GEMMs of the current one, as in the dense loop;
+-        the next sparse block index is read one block ahead. A KV tile with no Q blocks writes
+-        dK = dV = 0.
++        cp.async-prefetched under the dK / dQ GEMMs, as in the dense loop. A KV tile with no Q
++        blocks writes dK = dV = 0.
+         """
+         kv_sub = self.kv_subtile_factor
+         n_block_sparse = n_block // kv_sub if cutlass.const_expr(kv_sub > 1) else n_block
+-        q_cnt, q_idx, full_cnt, full_idx, _ = get_block_sparse_iteration_info_bwd(
+-            blocksparse_tensors, batch_idx, head_idx, n_block_sparse
+-        )
+-        total_cnt = q_cnt + full_cnt
++        if cutlass.const_expr(isinstance(blocksparse_tensors, DenseBlockMask)):
++            num_words_max = DENSE_BLOCK_MASK_MAX_BLOCKS // 32
++            sKeep = cute.make_tensor(sBlockBits.iterator, cute.make_layout(num_words_max))
++            sPart = cute.make_tensor(
++                sBlockBits.iterator + num_words_max, cute.make_layout(num_words_max)
++            )
++            partial_all = None
++            if cutlass.const_expr(blocksparse_tensors.partial_kv_blocks is not None):
++                partial_all = cutlass.Int32(blocksparse_tensors.partial_kv_blocks[n_block_sparse])
++            num_words = build_block_bitmask_sm80(
++                blocksparse_tensors.block_mask[batch_idx, head_idx, None, n_block_sparse],
++                None,
++                partial_all,
++                sKeep,
++                sPart,
++                tidx,
++                self.num_threads,
++            )
++            cute.arch.barrier()
++            total_cnt = bitmask_count_sm80(sKeep, num_words)
++            pop = partial(bitmask_pop_asc_sm80, sKeep, sPart, num_words)
++            s0, s1, s2, s3 = cutlass.Int32(-1), cutlass.Int32(0), cutlass.Int32(0), cutlass.Int32(0)
++        else:
++            q_cnt, q_idx, full_cnt, full_idx, _ = get_block_sparse_iteration_info_bwd(
++                blocksparse_tensors, batch_idx, head_idx, n_block_sparse
++            )
++            total_cnt = q_cnt + full_cnt
++            pop = partial(list_pop_asc_sm80, q_cnt, q_idx, full_cnt, full_idx)
++            s0, s1 = cutlass.Int32(0), cutlass.Int32(0)
++            s2 = list_head_asc_sm80(q_cnt, q_idx, cutlass.Int32(0))
++            s3 = list_head_asc_sm80(full_cnt, full_idx, cutlass.Int32(0))
+         if total_cnt > 0:
+             load_KV()
+-            blk_cur = self.sparse_block_at_bwd(cutlass.Int32(0), q_cnt, q_idx, full_idx, total_cnt)
++            blk_cur, part_cur, s0, s1, s2, s3 = pop(s0, s1, s2, s3)
+             m_first = blk_cur * self.q_subtile_factor
+             load_Q_LSE(m_first, smem_pipe_write_q=0)
+             cute.arch.cp_async_commit_group()
+             load_dO_dPsum(m_first, smem_pipe_write_q=0)
+             cute.arch.cp_async_commit_group()
+-
+-            tile_mask_fn_partial = partial(
+-                self.sparse_apply_mask_bwd, mask_fn=mask_fn, n_block=n_block, seqlen=seqlen,
+-                mask_mod=self.mask_mod,
+-            )
+-            for i in cutlass.range(q_cnt, unroll=1):
+-                blk_next = self.sparse_block_at_bwd(i + 1, q_cnt, q_idx, full_idx, total_cnt)
++            for _ in cutlass.range(total_cnt, unroll=1):
++                blk_next, part_next, s0, s1, s2, s3 = pop(s0, s1, s2, s3)
+                 self.sparse_process_q_block_bwd(
+-                    blk_cur, blk_next, m_block_max, compute_one_m_block, tile_mask_fn_partial
++                    blk_cur, part_cur, blk_next, m_block_max, compute_one_m_block, mask_fn,
++                    n_block, seqlen,
+                 )
+                 blk_cur = blk_next
+-            if cutlass.const_expr(full_idx is not None):
+-                tile_mask_fn_full = partial(
+-                    self.sparse_apply_mask_bwd, mask_fn=mask_fn, n_block=n_block, seqlen=seqlen,
+-                    mask_mod=None,
+-                )
+-                for i in cutlass.range(q_cnt, total_cnt, unroll=1):
+-                    blk_next = self.sparse_block_at_bwd(i + 1, q_cnt, q_idx, full_idx, total_cnt)
+-                    self.sparse_process_q_block_bwd(
+-                        blk_cur, blk_next, m_block_max, compute_one_m_block, tile_mask_fn_full
+-                    )
+-                    blk_cur = blk_next
++                part_cur = part_next
+ 
+     @cute.jit
+     def epilogue(
+diff --git a/flash_attn/cute/flash_fwd.py b/flash_attn/cute/flash_fwd.py
+index c87549d..fb8ddd4 100644
+--- a/flash_attn/cute/flash_fwd.py
++++ b/flash_attn/cute/flash_fwd.py
+@@ -33,7 +33,16 @@ from flash_attn.cute.block_info import BlockInfo
+ from flash_attn.cute.pack_gqa import PackGQA, pack_gqa_layout
+ from flash_attn.cute.named_barrier import NamedBarrierFwd
+ from flash_attn.cute.block_sparsity import BlockSparseTensors
+-from flash_attn.cute.block_sparse_utils import get_curr_blocksparse_tensors, sparse_tensor_m_block
++from flash_attn.cute.block_sparsity import DenseBlockMask, DENSE_BLOCK_MASK_MAX_BLOCKS
++from flash_attn.cute.block_sparse_utils import (
++    get_curr_blocksparse_tensors,
++    sparse_tensor_m_block,
++    build_block_bitmask_sm80,
++    bitmask_count_sm80,
++    bitmask_pop_desc_sm80,
++    list_head_desc_sm80,
++    list_pop_desc_sm80,
++)
+ from flash_attn.cute.tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, TileSchedulerArguments
+ from flash_attn.cute.utils import AuxData
+ 
+@@ -621,6 +630,22 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+             sQ: sQV_struct
+             sK: sK_struct
+ 
++        if const_expr(getattr(self, "use_dense_block_mask", False)):
++            # keep + partial bitmasks of one DenseBlockMask row (512 B for 2048 blocks)
++            sBits_struct = cute.struct.Align[
++                cute.struct.MemRange[Int32, 2 * (DENSE_BLOCK_MASK_MAX_BLOCKS // 32)], 16
++            ]
++            assert not self.Q_in_regs
++
++            @cute.struct
++            class SharedStorageQKVBits:
++                sV: sV_struct
++                sQ: sQ_struct
++                sK: sK_struct
++                sBlockBits: sBits_struct
++
++            return SharedStorageQKVBits
++
+         return SharedStorageQKV if const_expr(not self.Q_in_regs) else SharedStorageSharedQV
+ 
+     @cute.jit
+@@ -640,7 +665,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         window_size_left: Int32 | int | None = None,
+         window_size_right: Int32 | int | None = None,
+         learnable_sink: Optional[cute.Tensor] = None,
+-        blocksparse_tensors: Optional[BlockSparseTensors] = None,
++        blocksparse_tensors=None,  # BlockSparseTensors | DenseBlockMask | None
+         aux_data: AuxData = AuxData(),
+         mCuTotalMBlocks: Optional[cute.Tensor] = None,
+         mCuTotalSplitsMBlocks: Optional[cute.Tensor] = None,
+@@ -674,6 +699,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         self.num_Q_load_threads = self.num_threads
+         self.num_epilogue_threads = self.num_threads
+         self.use_tma_O = Arch.sm_90 <= self.arch < Arch.sm_120
++        self.use_dense_block_mask = isinstance(blocksparse_tensors, DenseBlockMask)
+         self._setup_attributes()
+         SharedStorage = self._get_shared_storage_cls()
+         mQ, mK, mV, mO = [assume_tensor_aligned(t) for t in (mQ, mK, mV, mO)]
+@@ -800,7 +826,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         TileScheduler: cutlass.Constexpr[Callable],
+         aux_data: AuxData = AuxData(),
+         fastdiv_mods=None,
+-        blocksparse_tensors: Optional[BlockSparseTensors] = None,
++        blocksparse_tensors=None,  # BlockSparseTensors | DenseBlockMask | None
+     ):
+         # Thread index, block index
+         tidx, _, _ = cute.arch.thread_idx()
+@@ -1019,7 +1045,8 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+             )
+ 
+             if const_expr(blocksparse_tensors is not None):
+-                # Block-sparse path: iterate only over the KV blocks listed in the mask/full lists.
++                # Block-sparse path: iterate only over the KV blocks listed in the mask/full lists
++                # (or set in the dense block mask).
+                 self.sparse_mainloop(
+                     blocksparse_tensors,
+                     batch_size,
+@@ -1030,6 +1057,12 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+                     compute_one_n_block,
+                     mask_fn,
+                     preprocess_Q,
++                    storage.sBlockBits.get_tensor(
++                        cute.make_layout(2 * (DENSE_BLOCK_MASK_MAX_BLOCKS // 32))
++                    )
++                    if const_expr(self.use_dense_block_mask)
++                    else None,
++                    tidx,
+                 )
+             else:
+                 # If Q_in_regs, we load Q, then load 1 stage of K, then (optionally) rotate Q and
+@@ -1260,29 +1293,6 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         # if const_expr(self.num_stages > 1):
+         #     load_K_next()
+ 
+-    @cute.jit
+-    def sparse_block_at(
+-        self,
+-        i: Int32,
+-        mask_cnt: Int32,
+-        mask_idx: cute.Tensor,
+-        full_idx: Optional[cute.Tensor],
+-        total_cnt: Int32,
+-    ) -> Int32:
+-        """Sparse KV block index at position ``i`` of the combined visiting order, or -1.
+-
+-        Visiting order: the partial ("mask") list in reverse, then the full list in reverse
+-        (highest KV block first, like the SM90 consumer).
+-        """
+-        blk = Int32(-1)
+-        if i < mask_cnt:
+-            blk = mask_idx[mask_cnt - 1 - i]
+-        else:
+-            if const_expr(full_idx is not None):
+-                if i < total_cnt:
+-                    blk = full_idx[total_cnt - 1 - i]
+-        return blk
+-
+     @cute.jit
+     def sparse_apply_mask(
+         self,
+@@ -1290,26 +1300,36 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         n_block: Int32,
+         mask_fn: Callable,
+         seqlen: SeqlenInfoQK,
+-        mask_mod: cutlass.Constexpr[Optional[Callable]],
++        is_partial: Int32,
+     ):
+         """Mask one physical tile of a sparse block.
+ 
+-        mask_mod is applied only for partial blocks (``mask_mod`` is None for full blocks).
+-        seqlen masking is applied only if the tile crosses seqlen_k (runtime, CTA-uniform).
++        mask_mod is applied only to partial blocks (runtime, CTA-uniform flag); seqlen masking
++        only if the tile crosses seqlen_k. Full, in-bounds tiles are not touched, exactly like
++        the unmasked tiles of the dense loop.
+         """
+-        if (n_block + 1) * self.tile_n > seqlen.seqlen_k:
+-            mask_fn(acc_S, n_block=n_block, mask_mod=mask_mod, mask_seqlen=True)
++        crosses_seqlen = (n_block + 1) * self.tile_n > seqlen.seqlen_k
++        if const_expr(self.mask_mod is None):
++            if crosses_seqlen:
++                mask_fn(acc_S, n_block=n_block, mask_mod=None, mask_seqlen=True)
+         else:
+-            if const_expr(mask_mod is not None):
+-                mask_fn(acc_S, n_block=n_block, mask_mod=mask_mod, mask_seqlen=False)
++            if is_partial != 0:
++                if crosses_seqlen:
++                    mask_fn(acc_S, n_block=n_block, mask_mod=self.mask_mod, mask_seqlen=True)
++                else:
++                    mask_fn(acc_S, n_block=n_block, mask_mod=self.mask_mod, mask_seqlen=False)
++            else:
++                if crosses_seqlen:
++                    mask_fn(acc_S, n_block=n_block, mask_mod=None, mask_seqlen=True)
+ 
+     @cute.jit
+     def sparse_process_block(
+         self,
+         blk_cur: Int32,
++        part_cur: Int32,
+         blk_next: Int32,
+         compute_one_n_block: Callable,
+-        tile_mask_fn: Callable,
++        mask_fn: Callable,
+         seqlen: SeqlenInfoQK,
+     ):
+         """Process the kv_subtile_factor physical tiles of sparse KV block ``blk_cur``.
+@@ -1318,6 +1338,9 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         tile is computed targets the highest tile of ``blk_next`` (nothing if blk_next < 0).
+         """
+         kv_sub = self.kv_subtile_factor
++        tile_mask_fn = partial(
++            self.sparse_apply_mask, mask_fn=mask_fn, seqlen=seqlen, is_partial=part_cur
++        )
+         for j in cutlass.range_constexpr(kv_sub):
+             n_block = blk_cur * kv_sub + (kv_sub - 1 - j)
+             if const_expr(j < kv_sub - 1):
+@@ -1338,7 +1361,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+     @cute.jit
+     def sparse_mainloop(
+         self,
+-        blocksparse_tensors: BlockSparseTensors,
++        blocksparse_tensors,
+         batch_idx: Int32,
+         head_idx: Int32,
+         m_block: Int32,
+@@ -1347,19 +1370,22 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         compute_one_n_block: Callable,
+         mask_fn: Callable,
+         preprocess_Q: Callable,
++        sBlockBits: Optional[cute.Tensor],
++        tidx: Int32,
+     ):
+         """Block-sparse mainloop for the SM80-family forward (num_stages == 1).
+ 
+-        Mirrors the SM90 design (block_sparse_utils.consume_block_sparse_loads): the partial
+-        list (mask_block_cnt/idx, mask_mod applied) is visited first, then the full list
+-        (full_block_cnt/idx, mask_mod skipped), each in reverse order. The online softmax
+-        starts from row_max=-inf / row_sum=0 / acc_O=0, so no block needs to be peeled as
+-        "first" (the first rescale multiplies zeros). An empty row of blocks leaves O=0 and
+-        LSE=-inf.
++        Input is either BlockSparseTensors (FA4 index lists: partial "mask" list with mask_mod,
++        full list without) or a DenseBlockMask (uint8 [B, H, M, N] row turned into a smem
++        bitmask; no index lists at all). Either way the KV blocks are walked as ONE merged
++        sequence in descending order -- the order of the dense loop -- with a per-block
++        partial flag, so the result is bit-identical to the dense kernel with an equivalent
++        mask_mod. The online softmax starts from row_max=-inf / row_sum=0 / acc_O=0, so no
++        block is peeled as "first"; an empty row leaves O=0 and LSE=-inf.
+ 
+         Pipelining is the dense SM80 one: V(n) is loaded under the QK^T GEMM of tile n, and
+-        K of the next visited tile under softmax + PV of tile n. The next sparse block index is
+-        read from global memory at the top of each block iteration, one block ahead of its use.
++        K of the next visited tile under softmax + PV of tile n. The next block (and, for
++        lists, the next list entry) is fetched one block ahead of its use.
+         """
+         kv_sub = self.kv_subtile_factor
+         m_block_sparse = sparse_tensor_m_block(
+@@ -1367,14 +1393,38 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+             self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
+             self.q_subtile_factor,
+         )
+-        mask_cnt, mask_idx, full_cnt, full_idx = get_curr_blocksparse_tensors(
+-            batch_idx, head_idx, m_block_sparse, blocksparse_tensors, seqlen
+-        )
+-        total_cnt = mask_cnt + full_cnt
++        if const_expr(isinstance(blocksparse_tensors, DenseBlockMask)):
++            num_words_max = DENSE_BLOCK_MASK_MAX_BLOCKS // 32
++            sKeep = cute.make_tensor(sBlockBits.iterator, cute.make_layout(num_words_max))
++            sPart = cute.make_tensor(
++                sBlockBits.iterator + num_words_max, cute.make_layout(num_words_max)
++            )
++            num_words = build_block_bitmask_sm80(
++                blocksparse_tensors.block_mask[batch_idx, head_idx, m_block_sparse, None],
++                blocksparse_tensors.partial_kv_blocks,
++                None,
++                sKeep,
++                sPart,
++                tidx,
++                self.num_threads,
++            )
++            cute.arch.barrier()
++            total_cnt = bitmask_count_sm80(sKeep, num_words)
++            pop = partial(bitmask_pop_desc_sm80, sKeep, sPart)
++            s0, s1, s2, s3 = num_words, Int32(0), Int32(0), Int32(0)
++        else:
++            mask_cnt, mask_idx, full_cnt, full_idx = get_curr_blocksparse_tensors(
++                batch_idx, head_idx, m_block_sparse, blocksparse_tensors, seqlen
++            )
++            total_cnt = mask_cnt + full_cnt
++            pop = partial(list_pop_desc_sm80, mask_cnt, mask_idx, full_cnt, full_idx)
++            s0, s1 = Int32(0), Int32(0)
++            s2 = list_head_desc_sm80(mask_cnt, mask_idx, Int32(0))
++            s3 = list_head_desc_sm80(full_cnt, full_idx, Int32(0))
+ 
+         # Prologue: Q was committed by the caller; issue K of the first visited tile.
+-        blk_cur = self.sparse_block_at(Int32(0), mask_cnt, mask_idx, full_idx, total_cnt)
+-        if total_cnt > 0:
++        blk_cur, part_cur, s0, s1, s2, s3 = pop(s0, s1, s2, s3)
++        if blk_cur >= 0:
+             n_first = blk_cur * kv_sub + (kv_sub - 1)
+             if (n_first + 1) * self.tile_n > seqlen.seqlen_k:
+                 load_K(n_first, smem_pipe_write=0, need_predicates=True)
+@@ -1383,27 +1433,13 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         cute.arch.cp_async_commit_group()
+         preprocess_Q()
+ 
+-        # Partial blocks: apply mask_mod.
+-        mask_tile_fn_partial = partial(
+-            self.sparse_apply_mask, mask_fn=mask_fn, seqlen=seqlen, mask_mod=self.mask_mod
+-        )
+-        for i in cutlass.range(mask_cnt, unroll=1):
+-            blk_next = self.sparse_block_at(i + 1, mask_cnt, mask_idx, full_idx, total_cnt)
++        for _ in cutlass.range(total_cnt, unroll=1):
++            blk_next, part_next, s0, s1, s2, s3 = pop(s0, s1, s2, s3)
+             self.sparse_process_block(
+-                blk_cur, blk_next, compute_one_n_block, mask_tile_fn_partial, seqlen
++                blk_cur, part_cur, blk_next, compute_one_n_block, mask_fn, seqlen
+             )
+             blk_cur = blk_next
+-        # Full blocks: skip mask_mod.
+-        if const_expr(full_idx is not None):
+-            mask_tile_fn_full = partial(
+-                self.sparse_apply_mask, mask_fn=mask_fn, seqlen=seqlen, mask_mod=None
+-            )
+-            for i in cutlass.range(mask_cnt, total_cnt, unroll=1):
+-                blk_next = self.sparse_block_at(i + 1, mask_cnt, mask_idx, full_idx, total_cnt)
+-                self.sparse_process_block(
+-                    blk_cur, blk_next, compute_one_n_block, mask_tile_fn_full, seqlen
+-                )
+-                blk_cur = blk_next
++            part_cur = part_next
+ 
+     @cute.jit
+     def apply_score_mod(
+diff --git a/flash_attn/cute/interface.py b/flash_attn/cute/interface.py
+index 6190721..88e8395 100644
+--- a/flash_attn/cute/interface.py
++++ b/flash_attn/cute/interface.py
+@@ -69,6 +69,9 @@ from flash_attn.cute.sm100_hd256_2cta_fmha_backward import BlackwellFusedMultiHe
+ from flash_attn.cute.utils import AuxData
+ from flash_attn.cute.block_sparsity import (
+     BlockSparseTensorsTorch,
++    DenseBlockMaskTorch,
++    normalize_dense_block_mask,
++    to_cute_dense_block_mask,
+     block_sparse_bwd_supports_2cta,
+     get_kv_subtile_factor,
+     get_sparse_q_block_size,
+@@ -953,7 +956,16 @@ def _flash_attn_fwd(
+     is_dense_noncausal = not is_varlen and not causal and not local
+     use_clc_scheduler = requested_use_clc_scheduler and not is_varlen_mha and not is_dense_noncausal
+ 
+-    if use_block_sparsity:
++    use_dense_block_mask = isinstance(block_sparse_tensors, DenseBlockMaskTorch)
++    if use_dense_block_mask:
++        if arch // 10 != 8:
++            raise NotImplementedError("DenseBlockMaskTorch is only supported on SM8x")
++        if cu_seqlens_q is not None or cu_seqlens_k is not None:
++            raise NotImplementedError("DenseBlockMaskTorch does not support varlen")
++        # NB: pack_gqa requires a head-broadcast (H == 1) block mask
++        if pack_gqa and block_sparse_tensors.block_mask.shape[1] != 1:
++            pack_gqa = False
++    elif use_block_sparsity:
+         # NB: pack_gqa requires block sparse head dim == 1 (broadcasted)
+         head_dim_idx = 0 if block_sparse_tensors.mask_block_cnt.ndim == 2 else 1
+         if pack_gqa and block_sparse_tensors.mask_block_cnt.shape[head_dim_idx] != 1:
+@@ -976,7 +988,22 @@ def _flash_attn_fwd(
+     normalized_block_sparse_tensors = None
+     q_subtile_factor = 1
+     kv_subtile_factor = 1
+-    if block_sparse_tensors is not None:
++    if use_dense_block_mask:
++        (
++            normalized_block_sparse_tensors,
++            q_subtile_factor,
++            kv_subtile_factor,
++            block_sparse_broadcast_pattern,
++        ) = normalize_dense_block_mask(
++            block_sparse_tensors,
++            batch_size=batch_size,
++            num_head=num_head,
++            seqlen_q=seqlen_q,
++            seqlen_k=seqlen_k,
++            tile_m=tile_m,
++            tile_n=tile_n,
++        )
++    elif block_sparse_tensors is not None:
+         block_sparse_config = normalize_block_sparse_config(
+             block_sparse_tensors,
+             batch_size=batch_size,
+@@ -1225,8 +1252,8 @@ def _flash_attn_fwd(
+         q_descale is not None,
+         k_descale is not None,
+         v_descale is not None,
+-        block_sparse_tensors is None or block_sparse_tensors.cu_total_m_blocks is None,
+-        block_sparse_tensors is None or block_sparse_tensors.cu_block_idx_offsets is None,
++        getattr(block_sparse_tensors, "cu_total_m_blocks", None) is None,
++        getattr(block_sparse_tensors, "cu_block_idx_offsets", None) is None,
+         tile_m,
+         tile_n,
+         q_stage,
+@@ -1305,7 +1332,9 @@ def _flash_attn_fwd(
+         )
+ 
+         sparse_tensors = None
+-        if normalized_block_sparse_tensors is not None:
++        if use_dense_block_mask:
++            sparse_tensors = to_cute_dense_block_mask(normalized_block_sparse_tensors)
++        elif normalized_block_sparse_tensors is not None:
+             sparse_tensors = to_cute_block_sparse_tensors(normalized_block_sparse_tensors)
+ 
+         cute_aux_tensors = None
+@@ -1607,8 +1636,13 @@ def _flash_attn_fwd(
+             ]
+             if arch // 10 in [10, 11]:
+                 call_args.append(descale_tensors)
+-            call_args.extend([
+-                (
++            if use_dense_block_mask:
++                sparse_call_arg = (
++                    normalized_block_sparse_tensors.block_mask,
++                    normalized_block_sparse_tensors.partial_kv_blocks,
++                )
++            elif normalized_block_sparse_tensors is not None:
++                sparse_call_arg = (
+                     normalized_block_sparse_tensors.mask_block_cnt,
+                     normalized_block_sparse_tensors.mask_block_idx,
+                     normalized_block_sparse_tensors.full_block_cnt,
+@@ -1618,8 +1652,10 @@ def _flash_attn_fwd(
+                     normalized_block_sparse_tensors.dq_write_order,
+                     normalized_block_sparse_tensors.dq_write_order_full,
+                 )
+-                if normalized_block_sparse_tensors is not None
+-                else None,
++            else:
++                sparse_call_arg = None
++            call_args.extend([
++                sparse_call_arg,
+                 AuxData(aux_tensors, aux_scalars),
+             ])
+             if use_dedicated_hd256_kernel:
+@@ -2420,7 +2456,25 @@ def _flash_attn_bwd(
+ 
+     block_sparse_broadcast_pattern = None
+     normalized_block_sparse_tensors = None
+-    if use_block_sparsity:
++    use_dense_block_mask = isinstance(block_sparse_tensors, DenseBlockMaskTorch)
++    if use_dense_block_mask:
++        if arch // 10 != 8:
++            raise NotImplementedError("DenseBlockMaskTorch is only supported on SM8x")
++        (
++            normalized_block_sparse_tensors,
++            q_subtile_factor,
++            kv_subtile_factor,
++            block_sparse_broadcast_pattern,
++        ) = normalize_dense_block_mask(
++            block_sparse_tensors,
++            batch_size=batch_size,
++            num_head=num_head,
++            seqlen_q=seqlen_q,
++            seqlen_k=seqlen_k,
++            tile_m=m_block_size,
++            tile_n=n_block_size,
++        )
++    elif use_block_sparsity:
+         (
+             normalized_block_sparse_tensors,
+             block_sparse_broadcast_pattern,
+@@ -2453,7 +2507,7 @@ def _flash_attn_bwd(
+                 )
+     if (
+         normalized_block_sparse_tensors is not None
+-        and normalized_block_sparse_tensors.spt is not None
++        and getattr(normalized_block_sparse_tensors, "spt", None) is not None
+     ):
+         spt = normalized_block_sparse_tensors.spt and deterministic
+     else:
+@@ -2696,7 +2750,9 @@ def _flash_attn_bwd(
+ 
+         # Block sparse tensors for backward use Q-direction indexing (transposed from forward).
+         sparse_tensors_compile = None
+-        if normalized_block_sparse_tensors is not None:
++        if use_dense_block_mask:
++            sparse_tensors_compile = to_cute_dense_block_mask(normalized_block_sparse_tensors)
++        elif normalized_block_sparse_tensors is not None:
+             sparse_tensors_compile = to_cute_block_sparse_tensors(normalized_block_sparse_tensors)
+         dq_accum_tensor = dq_tensor if use_dedicated_hd256_kernel else dq_accum_tensor
+ 
+@@ -2767,6 +2823,11 @@ def _flash_attn_bwd(
+             dV_semaphore,
+             AuxData(aux_tensors, aux_scalars),
+             (
++                normalized_block_sparse_tensors.block_mask,
++                normalized_block_sparse_tensors.partial_kv_blocks,
++            )
++            if use_dense_block_mask
++            else (
+                 normalized_block_sparse_tensors.mask_block_cnt,
+                 normalized_block_sparse_tensors.mask_block_idx,
+                 normalized_block_sparse_tensors.full_block_cnt,
+@@ -3516,6 +3577,9 @@ class FlashAttnFunc(torch.autograd.Function):
+         ctx.score_mod_bwd = score_mod_bwd 
+         ctx.mask_mod = mask_mod
+         ctx.aux_scalars = aux_scalars
++        if block_sparse_tensors_bwd is None and isinstance(block_sparse_tensors, DenseBlockMaskTorch):
++            # A dense block mask serves both directions (backward reads its columns).
++            block_sparse_tensors_bwd = block_sparse_tensors
+         ctx.block_sparse_tensors_bwd = block_sparse_tensors_bwd
+         ctx.fwd_is_block_sparse = block_sparse_tensors is not None
+         ctx.gather_bwd_token_chunk = gather_bwd_token_chunk
+-- 
+2.34.1
+

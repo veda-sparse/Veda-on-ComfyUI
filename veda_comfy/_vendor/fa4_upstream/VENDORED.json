@@ -1,0 +1,10 @@
+{
+ "compat_edits": [
+  "cache_utils.py"
+ ],
+ "fa4_version": "4.0.0b32",
+ "generator": "tools/vendor_fa4.py",
+ "patches": [],
+ "wheel": "https://files.pythonhosted.org/packages/40/d0/b1e9ab8eefc9e67179a372c3e1a8e9f83d963c3a8e5bd4c738e55dd134c0/flash_attn_4-4.0.0b32-py3-none-any.whl",
+ "wheel_sha256": "9299da3524d579d84eb92954d3243aa095d55ebdafcf80d6a9766fd96fe8a562"
+}

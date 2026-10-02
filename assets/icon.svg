@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 512 512" role="img" aria-label="Miowtion logo">
+  <defs>
+    <linearGradient id="gridGradient" x1="128" y1="270" x2="256" y2="492" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7b6cff"/>
+      <stop offset="0.45" stop-color="#2aa3ff"/>
+      <stop offset="0.75" stop-color="#16c0c4"/>
+      <stop offset="1" stop-color="#11b3ad"/>
+    </linearGradient>
+    <linearGradient id="bladeGradient" x1="256" y1="492" x2="384" y2="270" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#083858"/>
+      <stop offset="1" stop-color="#0a4d72"/>
+    </linearGradient>
+    <radialGradient id="furGradient" cx="256" cy="130" r="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c5378"/>
+      <stop offset="0.6" stop-color="#113a57"/>
+      <stop offset="1" stop-color="#0a2a42"/>
+    </radialGradient>
+    <linearGradient id="bodyFur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d3150"/>
+      <stop offset="1" stop-color="#082236"/>
+    </linearGradient>
+    <linearGradient id="whiteFur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d5e6f1"/>
+    </linearGradient>
+    <linearGradient id="earGradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8a7bff"/>
+      <stop offset="1" stop-color="#e58fc4"/>
+    </linearGradient>
+    <radialGradient id="irisR" cx="305" cy="184" r="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b9fff0"/>
+      <stop offset="0.45" stop-color="#3fe0c8"/>
+      <stop offset="1" stop-color="#1792c9"/>
+    </radialGradient>
+    <radialGradient id="irisL" cx="207" cy="184" r="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b9fff0"/>
+      <stop offset="0.45" stop-color="#3fe0c8"/>
+      <stop offset="1" stop-color="#1792c9"/>
+    </radialGradient>
+    <linearGradient id="whiskerR" x1="290" y1="0" x2="412" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.45" stop-color="#bfe6ff"/>
+      <stop offset="1" stop-color="#2aa3ff"/>
+    </linearGradient>
+    <linearGradient id="whiskerL" x1="222" y1="0" x2="100" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.45" stop-color="#bfe6ff"/>
+      <stop offset="1" stop-color="#2aa3ff"/>
+    </linearGradient>
+    <linearGradient id="stampGrid" x1="95" y1="70" x2="282" y2="485" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7b6cff"/>
+      <stop offset="0.45" stop-color="#2aa3ff"/>
+      <stop offset="0.75" stop-color="#16c0c4"/>
+      <stop offset="1" stop-color="#11b3ad"/>
+    </linearGradient>
+    <clipPath id="opening">
+      <path d="M128.0 270.0 L128.0 0.0 L384.0 0.0 L384.0 270.0 L256.0 344.0Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- box interior -->
+  <path d="M128.0 270.0 L256.0 196.0 L256.0 344.0 Z" fill="#1d5c86"/>
+  <path d="M256.0 196.0 L384.0 270.0 L256.0 344.0 Z" fill="#154a6d"/>
+
+  <!-- body -->
+  <g clip-path="url(#opening)">
+    <path d="M150 360 C150 300 196 262 256 262 C316 262 362 300 362 360 Z" fill="url(#bodyFur)"/>
+    <path d="M226 272 C240 262 272 262 286 272 C306 298 304 334 256 350 C208 334 206 298 226 272Z" fill="url(#whiteFur)"/>
+  </g>
+
+  <!-- head -->
+  <path d="M256.0 98.0 C270.0 98.0 282.0 99.0 293.0 102.0 C310.0 84.0 330.0 56.0 348.0 38.0 C354.0 32.0 360.0 34.0 361.0 42.0 C365.0 76.0 370.0 112.0 376.0 142.0 C386.0 164.0 390.0 190.0 386.0 208.0 L398.0 222.0 L382.0 226.0 L390.0 242.0 L370.0 244.0 L374.0 258.0 L354.0 256.0 C334.0 280.0 298.0 294.0 256.0 295.0 C214.0 294.0 178.0 280.0 158.0 256.0 L138.0 258.0 L142.0 244.0 L122.0 242.0 L130.0 226.0 L114.0 222.0 L126.0 208.0 C122.0 190.0 126.0 164.0 136.0 142.0 C142.0 112.0 147.0 76.0 151.0 42.0 C152.0 34.0 158.0 32.0 164.0 38.0 C182.0 56.0 202.0 84.0 219.0 102.0 C230.0 99.0 242.0 98.0 256.0 98.0Z" fill="url(#furGradient)"/>
+  <path d="M302.0 108.0 C316.0 90.0 332.0 66.0 349.0 50.0 C354.0 84.0 359.0 114.0 363.0 138.0 C346.0 128.0 322.0 116.0 302.0 108.0Z" fill="url(#earGradient)"/>
+  <path d="M210.0 108.0 C196.0 90.0 180.0 66.0 163.0 50.0 C158.0 84.0 153.0 114.0 149.0 138.0 C166.0 128.0 190.0 116.0 210.0 108.0Z" fill="url(#earGradient)"/>
+  <path d="M308.0 116.0 Q318.0 96.0 333.0 80.0 Q322.0 100.0 316.0 120.0 M318.0 120.0 Q332.0 104.0 347.0 94.0 Q334.0 108.0 326.0 124.0 M330.0 126.0 Q344.0 116.0 356.0 112.0 Q344.0 122.0 338.0 129.0Z M204.0 116.0 Q194.0 96.0 179.0 80.0 Q190.0 100.0 196.0 120.0 M194.0 120.0 Q180.0 104.0 165.0 94.0 Q178.0 108.0 186.0 124.0 M182.0 126.0 Q168.0 116.0 156.0 112.0 Q168.0 122.0 174.0 129.0Z" fill="#f3f8ff" opacity="0.6"/>
+  <!-- tabby M -->
+  <path d="M252 112 Q256 108 260 112 L257 146 Q256 149 255 146Z M234 118 Q238 114 241 118 Q246 132 245 146 Q241 134 234 118Z M278 118 Q274 114 271 118 Q266 132 267 146 Q271 134 278 118Z" fill="#2a6a93" opacity="0.55"/>
+  <!-- muzzle -->
+  <path d="M256.0 212.0 C266.0 212.0 274.0 220.0 278.0 228.0 C294.0 228.0 304.0 242.0 300.0 257.0 C297.0 268.0 286.0 272.0 278.0 274.0 C276.0 286.0 266.0 296.0 256.0 297.0 C246.0 296.0 236.0 286.0 234.0 274.0 C226.0 272.0 215.0 268.0 212.0 257.0 C208.0 242.0 218.0 228.0 234.0 228.0 C238.0 220.0 246.0 212.0 256.0 212.0Z" fill="url(#whiteFur)"/>
+  <!-- eyes -->
+  <g stroke="#061a2b" stroke-width="3.2" stroke-linejoin="round">
+    <path d="M275.0 188.0 C282.0 164.0 318.0 156.0 333.0 176.0 C330.0 200.0 292.0 210.0 275.0 188.0Z" fill="url(#irisR)"/>
+    <path d="M237.0 188.0 C230.0 164.0 194.0 156.0 179.0 176.0 C182.0 200.0 220.0 210.0 237.0 188.0Z" fill="url(#irisL)"/>
+  </g>
+  <path d="M305.0 164.0 C313.0 174.0 313.0 194.0 305.0 203.0 C297.0 194.0 297.0 174.0 305.0 164.0Z M207.0 164.0 C199.0 174.0 199.0 194.0 207.0 203.0 C215.0 194.0 215.0 174.0 207.0 164.0Z" fill="#061a2b"/>
+  <circle cx="312" cy="174" r="3.6" fill="#fff"/>
+  <circle cx="214" cy="174" r="3.6" fill="#fff"/>
+  <!-- whisker pads -->
+  <g fill="#9fb8c9">
+    <circle cx="276" cy="248" r="1.8"/><circle cx="284" cy="244" r="1.8"/><circle cx="282" cy="253" r="1.8"/>
+    <circle cx="236" cy="248" r="1.8"/><circle cx="228" cy="244" r="1.8"/><circle cx="230" cy="253" r="1.8"/>
+  </g>
+  <!-- nose + mouth -->
+  <path d="M244 226 C244 221 268 221 268 226 C268 233 261 238 256 240 C251 238 244 233 244 226Z" fill="#ee8fae" stroke="#b85a7c" stroke-width="1.5"/>
+  <path d="M250 226 C253 224 259 224 262 226" stroke="#fff" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.7"/>
+  <path d="M256 240 L256 249 M256 249 C252 257 243 259 237 254 M256 249 C260 257 269 259 275 254" fill="none" stroke="#3b5a70" stroke-width="2.6" stroke-linecap="round"/>
+
+  <!-- box faces -->
+  <path d="M128.0 270.0 160.0 288.5 160.0 325.5 128.0 307.0Z" fill="url(#gridGradient)"/><path d="M160.0 288.5 192.0 307.0 192.0 344.0 160.0 325.5Z" fill="#e6f3fb"/><path d="M192.0 307.0 224.0 325.5 224.0 362.5 192.0 344.0Z" fill="#e6f3fb"/><path d="M224.0 325.5 256.0 344.0 256.0 381.0 224.0 362.5Z" fill="#e6f3fb"/><path d="M128.0 307.0 160.0 325.5 160.0 362.5 128.0 344.0Z" fill="url(#gridGradient)"/><path d="M160.0 325.5 192.0 344.0 192.0 381.0 160.0 362.5Z" fill="url(#gridGradient)"/><path d="M192.0 344.0 224.0 362.5 224.0 399.5 192.0 381.0Z" fill="#e6f3fb"/><path d="M224.0 362.5 256.0 381.0 256.0 418.0 224.0 399.5Z" fill="#e6f3fb"/><path d="M128.0 344.0 160.0 362.5 160.0 399.5 128.0 381.0Z" fill="url(#gridGradient)"/><path d="M160.0 362.5 192.0 381.0 192.0 418.0 160.0 399.5Z" fill="url(#gridGradient)"/><path d="M192.0 381.0 224.0 399.5 224.0 436.5 192.0 418.0Z" fill="url(#gridGradient)"/><path d="M224.0 399.5 256.0 418.0 256.0 455.0 224.0 436.5Z" fill="#e6f3fb"/><path d="M128.0 381.0 160.0 399.5 160.0 436.5 128.0 418.0Z" fill="url(#gridGradient)"/><path d="M160.0 399.5 192.0 418.0 192.0 455.0 160.0 436.5Z" fill="#e6f3fb"/><path d="M192.0 418.0 224.0 436.5 224.0 473.5 192.0 455.0Z" fill="url(#gridGradient)"/><path d="M224.0 436.5 256.0 455.0 256.0 492.0 224.0 473.5Z" fill="url(#gridGradient)"/>
+  <path d="M256.0 344.0 384.0 270.0 384.0 418.0 256.0 492.0Z" fill="url(#bladeGradient)"/>
+  <g transform="matrix(0.1900 -0.1098 0 0.1900 265.1 363.0)">
+    <path d="M423 41 L548 41 L381.1 480 L319 319 Z" fill="#e9f6ff"/>
+    <path d="M30 45 L187 45 L356 483 L198 483 Z" fill="url(#stampGrid)"/>
+    <g fill="none" stroke="#0a3a5a" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M30 45 L187 45 M64 133 L221 133 M97 220 L255 220 M131 308 L288 308 M164 395 L322 395 M198 483 L356 483 M30 45 L198 483 M109 45 L276 483 M187 45 L356 483"/>
+    </g>
+  </g>
+  <path d="M128.0 270.0 L128.0 418.0 M128.0 270.0 L256.0 344.0 M160.0 288.5 L160.0 436.5 M128.0 307.0 L256.0 381.0 M192.0 307.0 L192.0 455.0 M128.0 344.0 L256.0 418.0 M224.0 325.5 L224.0 473.5 M128.0 381.0 L256.0 455.0 M256.0 344.0 L256.0 492.0 M128.0 418.0 L256.0 492.0" stroke="#104866" stroke-width="4.5" fill="none" stroke-linecap="round"/>
+  <g fill="#104866"><circle cx="128.0" cy="270.0" r="4.4"/><circle cx="128.0" cy="307.0" r="4.4"/><circle cx="128.0" cy="344.0" r="4.4"/><circle cx="128.0" cy="381.0" r="4.4"/><circle cx="128.0" cy="418.0" r="4.4"/><circle cx="160.0" cy="288.5" r="4.4"/><circle cx="160.0" cy="325.5" r="4.4"/><circle cx="160.0" cy="362.5" r="4.4"/><circle cx="160.0" cy="399.5" r="4.4"/><circle cx="160.0" cy="436.5" r="4.4"/><circle cx="192.0" cy="307.0" r="4.4"/><circle cx="192.0" cy="344.0" r="4.4"/><circle cx="192.0" cy="381.0" r="4.4"/><circle cx="192.0" cy="418.0" r="4.4"/><circle cx="192.0" cy="455.0" r="4.4"/><circle cx="224.0" cy="325.5" r="4.4"/><circle cx="224.0" cy="362.5" r="4.4"/><circle cx="224.0" cy="399.5" r="4.4"/><circle cx="224.0" cy="436.5" r="4.4"/><circle cx="224.0" cy="473.5" r="4.4"/><circle cx="256.0" cy="344.0" r="4.4"/><circle cx="256.0" cy="381.0" r="4.4"/><circle cx="256.0" cy="418.0" r="4.4"/><circle cx="256.0" cy="455.0" r="4.4"/><circle cx="256.0" cy="492.0" r="4.4"/></g>
+  <path d="M128.0 270.0 L256.0 344.0 L384.0 270.0" stroke="#104866" stroke-width="6" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- paws -->
+  <path d="M189 318 C189 296 239 296 239 318 C239 330 238 338 234 343 C235 353 223 356 221 347 C219 356 209 356 207 347 C205 356 193 353 194 343 C190 338 189 330 189 318Z" fill="url(#whiteFur)" stroke="#0b2c45" stroke-width="3"/><path d="M207 347 L207 340 M221 347 L221 340" stroke="#7d9bb0" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M273 318 C273 296 323 296 323 318 C323 330 322 338 318 343 C319 353 307 356 305 347 C303 356 293 356 291 347 C289 356 277 353 278 343 C274 338 273 330 273 318Z" fill="url(#whiteFur)" stroke="#0b2c45" stroke-width="3"/><path d="M291 347 L291 340 M305 347 L305 340" stroke="#7d9bb0" stroke-width="2.6" stroke-linecap="round"/>
+
+  <!-- whiskers -->
+  <g fill="none" stroke-width="2.4" stroke-linecap="round">
+    <path d="M290 246 C324 236 362 228 408 224" stroke="url(#whiskerR)"/><path d="M292 254 C330 252 368 254 412 260" stroke="url(#whiskerR)"/><path d="M288 262 C322 267 356 272 400 280" stroke="url(#whiskerR)"/>
+    <path d="M 222.0 246.0 C 188.0 236.0 150.0 228.0 104.0 224.0" stroke="url(#whiskerL)"/><path d="M 220.0 254.0 C 182.0 252.0 144.0 254.0 100.0 260.0" stroke="url(#whiskerL)"/><path d="M 224.0 262.0 C 190.0 267.0 156.0 272.0 112.0 280.0" stroke="url(#whiskerL)"/>
+  </g>
+  <g fill="#2aa3ff"><circle cx="408.0" cy="224.0" r="4.2"/><circle cx="412.0" cy="260.0" r="4.2"/><circle cx="400.0" cy="280.0" r="4.2"/><circle cx="104.0" cy="224.0" r="4.2"/><circle cx="100.0" cy="260.0" r="4.2"/><circle cx="112.0" cy="280.0" r="4.2"/></g>
+</svg>

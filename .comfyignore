@@ -1,0 +1,10 @@
+# Excluded from the Comfy Registry package (gitignore syntax). Runtime
+# needs __init__.py, veda_comfy/, install_fa4*, requirements*.txt,
+# example_workflows/, assets/ and the docs at the top level.
+tests/
+tools/
+docs/
+.github/
+.githooks/
+AGENTS.md
+CLAUDE.md

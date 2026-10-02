@@ -1,0 +1,4 @@
+# Veda-on-ComfyUI needs nothing beyond ComfyUI's own requirements (torch,
+# safetensors, numpy). Faster optional kernels are installed separately:
+#   NVIDIA: install_fa4 (FlashAttention-4 / CuTe DSL), see README
+#   Apple:  pip install mlx

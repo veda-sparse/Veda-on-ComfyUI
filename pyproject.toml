@@ -1,0 +1,37 @@
+[project]
+name = "veda-sparse-attention"
+version = "0.1.0"
+description = "Veda learned sparse attention for MiniMax-H3 in ComfyUI: ~2-3x faster T2VA / FL2VA / R2VA video+audio generation, LoRA-compatible. NVIDIA (FlashAttention-4, Linux / Windows) and Apple silicon (MLX)."
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+# Nothing beyond ComfyUI's own requirements. Optional fast kernels:
+# install_fa4 (NVIDIA, requirements-fa4.txt) or `pip install mlx` (Apple).
+dependencies = []
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Environment :: GPU :: Apple Metal",
+]
+
+[project.urls]
+Repository = "https://github.com/veda-sparse/Veda-on-ComfyUI"
+Documentation = "https://github.com/veda-sparse/Veda-on-ComfyUI#readme"
+"Bug Tracker" = "https://github.com/veda-sparse/Veda-on-ComfyUI/issues"
+
+[tool.comfy]
+PublisherId = "veda-sparse"
+DisplayName = "Veda Sparse Attention (MiniMax H3)"
+Icon = "https://raw.githubusercontent.com/veda-sparse/Veda-on-ComfyUI/main/assets/icon.svg"
+# First release with MiniMax-H3 and the H3 packed layout in
+# transformer_options["minimax_h3_layout"].
+requires-comfyui = ">=0.38.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+
+[tool.ruff]
+line-length = 80
+extend-exclude = ["veda_comfy/_vendor"]

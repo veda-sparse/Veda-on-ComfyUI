@@ -1,0 +1,5 @@
+# Keep script line endings native to where they run.
+*.bat text eol=crlf
+*.sh text eol=lf
+*.py text eol=lf
+*.patch -text

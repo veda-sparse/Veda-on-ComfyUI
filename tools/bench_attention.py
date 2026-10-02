@@ -91,7 +91,7 @@ def main() -> None:
     if resolution.backend is None:
         sys.exit('no sparse backend works here')
     bundle = _random_bundle(grid)
-    budget = selection.Budget.from_user(args.sparsity, 0)
+    budget = selection.Budget.sparsity(args.sparsity)
     engine = veda_engine.VedaEngine(bundle, budget, budget,
                                     resolution.backend, device)
     plan = bundle.plans.select(grid).plan

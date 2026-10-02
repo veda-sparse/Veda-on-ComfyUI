@@ -148,6 +148,8 @@ async def run(server: str, graph: dict) -> dict:
 
 
 def main() -> None:
+    # Node texts contain emoji; a redirected Windows console is cp1252.
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--server', default='http://127.0.0.1:8188')
     parser.add_argument('--modes', default='veda,dense')

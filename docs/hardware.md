@@ -37,6 +37,10 @@
     整个 prompt 335 s；Veda 16.1 s/步（2.47x）、prompt 152–160 s（2.1–2.2x，含模型加载）。Veda
     注意力 6.7 s/步（134 ms/层，其中 kernel 93 ms），"Attention computed: 12.8% of full
     attention"；剩下约 9.4 s/步是 MLP 与 12 GB 显存下的权重搬运。打分器由节点自动下载。
+  - R2VA（Ref2VA int8 + 4 步 Turbo LoRA，1 张参考图 512x512，1344x768，124 帧，seed 21）：
+    全注意力 39.7 s/步、prompt 185 s；Veda 18.0 s/步（2.2x）、prompt 105 s（含模型加载）；
+    reference 段按 tile 稀疏（"Attention computed: 16.4%"，video tile 保留 8.0%）。打分器只在
+    FL2VA 上训练过，R2VA 的画质需要人工对比确认。
   - 过程中修掉的 Windows / ComfyUI 问题见 pitfalls.md（QuACK 的 fcntl 与 Triton、malloc graph
     abort、安装后同进程 import 缓存、cp1252 控制台）。生成的视频待人工对比确认。
 

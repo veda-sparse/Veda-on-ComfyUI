@@ -236,10 +236,14 @@ class VedaPatch:
                  f'Video: {veda_plans.describe_grid(spec.target.grid)}',
                  'Tile plan: ' + (choice.how if choice.exact
                                   else f'⚠ {choice.how}')]
-        sparsity = self.settings.describe()
-        if spec.references and self.settings.reference.keeps_all:
-            sparsity += ' (references use full attention)'
-        lines.append(f'Sparsity: {sparsity}')
+        lines.append(f'Sparsity: {self.settings.describe()}')
+        if spec.references:
+            count = len(spec.references)
+            mode = ('full attention' if self.settings.reference.keeps_all
+                    else 'tiled, ' + veda_settings.format_budget(
+                        self.settings.reference) + ' sparse')
+            lines.append(f'References: {count} span'
+                         f'{"s" if count > 1 else ""} ({mode})')
         full = self.settings.describe_full_attention()
         if full:
             lines.append(f'Full attention: {full}')

@@ -22,7 +22,8 @@ class NodeStatus:
     def show(self, text: str, level: int = logging.INFO) -> None:
         # The node shows the text as is; the log gets plain ASCII, because
         # Windows consoles and log files may not be UTF-8.
-        plain = text.encode('ascii', 'ignore').decode().strip()
+        plain = text.replace(' · ', ' | ').encode('ascii', 'ignore')
+        plain = plain.decode().strip()
         _LOG.log(level, 'Veda: %s', plain)
         if text == self._last or self.node_id is None:
             return

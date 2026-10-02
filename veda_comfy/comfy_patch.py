@@ -21,12 +21,18 @@ silently replace it.
 from __future__ import annotations
 
 import collections
+import contextlib
 import logging
 import weakref
 
 import torch
 
 import comfy.patcher_extension
+
+try:  # ComfyUI with the comfy-aimdo allocation graph (0.38+)
+    from comfy.model_prefetch import pause_malloc_graph as _pause_malloc_graph
+except ImportError:  # older ComfyUI: nothing to pause
+    _pause_malloc_graph = contextlib.nullcontext
 
 from . import backends
 from . import settings as veda_settings
@@ -163,6 +169,19 @@ class VedaPatch:
         return None
 
     def _sparse(self, q, k, v, layout, options, skip_output_reshape, dense):
+        # ComfyUI records each block's allocations into a malloc graph
+        # (comfy-aimdo) and expects everything allocated inside a block to
+        # be gone by its end. Veda keeps device state across calls (tile
+        # layouts, plan head groups, statistics) and its kernels allocate
+        # their own workspaces, so the whole sparse path runs with the
+        # graph paused, like ComfyUI's own sparse attention node does for
+        # its persistent state. Otherwise the process aborts natively.
+        with _pause_malloc_graph():
+            return self._sparse_unpaused(q, k, v, layout, options,
+                                         skip_output_reshape, dense)
+
+    def _sparse_unpaused(self, q, k, v, layout, options,
+                         skip_output_reshape, dense):
         engine = self._engine(q.device)
         if engine is None:
             return dense('no sparse kernel')

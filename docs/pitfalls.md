@@ -9,3 +9,4 @@
 | pytest 报 "attempted relative import with no known parent package" | pytest 把仓库根的 `__init__.py` 当包导入 | 根 `__init__.py` 只在 `__package__` 非空时 import | [comfyui_node](features/comfyui_node.md) |
 | 测试里的 H3 前向报 "in-place RoPE ... do not support autograd" | 测试模型参数 `requires_grad=True` | `requires_grad_(False)` | [comfyui_node](features/comfyui_node.md) |
 | 本地 HTTP 测试服务器启动 35 秒 | `server_bind` 的反向 DNS | 覆写 `server_bind` | [comfyui_node](features/comfyui_node.md) |
+| ComfyUI 进程在第一次稀疏调用时 "Fatal Python error: Aborted"（Windows RTX 5070 实测） | ComfyUI 0.38 的 comfy-aimdo malloc graph 要求 block 内分配的显存在 block 结束前释放；Veda 的缓存（tile 布局、head 组、统计）和 kernel workspace 是在 block 内分配的 | 稀疏路径整体包在 `comfy.model_prefetch.pause_malloc_graph()` 里 | [comfyui_node](features/comfyui_node.md) |

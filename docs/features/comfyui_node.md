@@ -23,6 +23,10 @@
   ComfyUI 的中断异常照常抛出。
 - **可见的回退**：没有可用 kernel、布局读不懂、未训练的尺寸、头数不匹配……每一种都在节点上显示
   一次（`status.NodeStatus` → `send_progress_text`），不需要前端扩展。
+- **整个稀疏路径在 `pause_malloc_graph()` 里跑**：ComfyUI 0.38 起，H3 前向的每个 block 都在
+  comfy-aimdo 的显存分配录制（malloc graph）里执行，block 内的分配必须在 block 结束前释放。
+  Veda 跨调用保存设备状态（tile 布局、head 组、统计量），kernel 也有自己的 workspace，在录制区
+  里分配会让进程直接 abort（Python 的 try/except 接不住）。暂停录制后这些分配走普通分配器。
 - 打分器权重放在主机内存（bf16），每次调用把这一层的投影（约 11 MB）拷到设备；CUDA 上 pin 住
   做异步拷贝。这样它跟随 ComfyUI 的 offload，而不是常驻 0.5 GB 显存。
 
@@ -60,6 +64,11 @@
   本来就是这样）。
 - **测试用 HTTP server 启动要 35 秒**：`HTTPServer.server_bind` 会做反向 DNS
   （`getfqdn`）。对策：测试里覆写 `server_bind`。
+
+- **malloc graph 导致原生 abort**：Windows + RTX 5070 的第一次端到端运行在第一次稀疏调用
+  就 "Fatal Python error: Aborted"。CPU 集成测试发现不了（malloc graph 只在 CUDA 上启用）。
+  对策见上；`tests/gpu` 之外，任何 GPU 改动都要用 `tools/e2e_minimax_h3.py` 在真实 ComfyUI 里
+  跑一遍。
 
 ## 验证记录
 

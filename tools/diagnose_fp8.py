@@ -34,6 +34,7 @@ from veda_comfy import hardware  # noqa: E402
 from veda_comfy.core import reference  # noqa: E402
 from veda_comfy.core import selection  # noqa: E402
 from veda_comfy.core import tiling  # noqa: E402
+from veda_comfy.kernels.fa4.flash_fwd import FP8_V_PERMUTATION  # noqa: E402
 
 _E4M3_MAX = 448.0
 
@@ -172,6 +173,33 @@ def main() -> None:
     rounded = collections.Counter(round(x, 4) for x in a)
     print(f'    distinct fp8 values {len(rounded)}/16, '
           f'most common {rounded.most_common(2)}')
+
+    print('\n7. inferred slot mapping (fp8 position -> bf16 position)')
+    # Matching by value is ambiguous when probabilities are close, so the
+    # same inference runs on several rows and only agreement counts.
+    votes = []
+    for row in range(6):
+        a = p_fp8[row, 0, :16].float()
+        b = p_bf16[row, 0, :16].float()
+        order = []
+        for i in range(16):
+            d = (b - a[i]).abs()
+            j = int(d.argmin())
+            second = float(d.sort().values[1])
+            order.append(j if second > 1.5 * float(d[j]) else -1)
+        votes.append(order)
+    agreed = []
+    for i in range(16):
+        col = [v[i] for v in votes if v[i] >= 0]
+        agreed.append(max(set(col), key=col.count) if col else -1)
+    print(f'    inferred  {agreed}')
+    print(f'    in use    {list(FP8_V_PERMUTATION)}')
+    if agreed == list(FP8_V_PERMUTATION):
+        print('    the permutation in use already matches')
+    else:
+        need = [FP8_V_PERMUTATION[i] if agreed[i] < 0 else
+                FP8_V_PERMUTATION[agreed[i]] for i in range(16)]
+        print(f'    composed  {need}')
 
     print('\nreference check (bf16 kernel against fp32 reference)')
     print('   ', _rel(bf16.attend(q, k, v, mask, layout), exact, layout))

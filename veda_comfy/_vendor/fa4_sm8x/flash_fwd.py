@@ -1000,13 +1000,28 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             # element does not lower to ldsm at all, it degrades to a copy
             # that cannot read a swizzled tile.
             if const_expr(self.dtype.width == 8):
-                qk_ld_op = warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4)
-                v_ld_op = warp.LdMatrix16x16x8bOp(transpose=True, num_matrices=2)
+                smem_copy_atom_QK = cute.make_copy_atom(
+                    warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4),
+                    self.dtype,
+                )
+                # No transposing ldmatrix can read V here: with 1-byte
+                # elements the 16 values a thread needs lie down a column
+                # of the tile, so the instruction's 16 contiguous bytes do
+                # not exist. A universal copy has no such requirement, and
+                # the FP8 tile is unswizzled, which is the other thing it
+                # insists on.
+                smem_copy_atom_V = cute.make_copy_atom(
+                    cute.nvgpu.CopyUniversalOp(), self.dtype
+                )
             else:
-                qk_ld_op = warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4)
-                v_ld_op = warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4)
-            smem_copy_atom_QK = cute.make_copy_atom(qk_ld_op, self.dtype)
-            smem_copy_atom_V = cute.make_copy_atom(v_ld_op, self.dtype)
+                smem_copy_atom_QK = cute.make_copy_atom(
+                    warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4),
+                    self.dtype,
+                )
+                smem_copy_atom_V = cute.make_copy_atom(
+                    warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4),
+                    self.dtype,
+                )
             smem_thr_copy_Q = utils.make_tiled_copy_A(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_K = utils.make_tiled_copy_B(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_V = utils.make_tiled_copy_B(smem_copy_atom_V, tiled_mma_pv).get_slice(tidx)

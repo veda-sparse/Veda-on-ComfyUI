@@ -174,11 +174,12 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     q_int8, q_scale = quantize(q, TILE, pre_scale=scale * LOG2E)
     k_int8, k_scale = quantize(k, KEY_BLOCK)
     blocks, block_count, valid = key_blocks(index, count, valid_count)
+    v16 = v.to(torch.float16)
     out = torch.empty_like(q)
     _attention_kernel[(slots // TILE, heads)](
-        q_int8, k_int8, v.to(torch.float16), q_scale, k_scale, blocks,
+        q_int8, k_int8, v16, q_scale, k_scale, blocks,
         block_count, valid, out,
-        q.stride(0), q.stride(1), dim, 1,
+        q.stride(0), q.stride(1), v16.stride(0), v16.stride(1),
         q_scale.stride(0), k_scale.stride(0), blocks.stride(0),
         blocks.stride(1),
         n_q_tiles=slots // TILE, D=dim, BLK=KEY_BLOCK, BLOCK_M=TILE,

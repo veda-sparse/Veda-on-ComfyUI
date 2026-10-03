@@ -22,6 +22,24 @@ def _comfyui_root():
     return None
 
 
+def _pin_comfyui_to_cpu():
+    """Makes ComfyUI report a CPU device, whatever torch was installed.
+
+    ComfyUI only leaves its default `cpu_state = CPUState.GPU` when `--cpu`
+    is passed or MPS is detected (comfy/model_management.py). A CPU-only
+    torch build matches neither, so `get_torch_device()` falls through to
+    `torch.cuda.current_device()` and raises "Torch not compiled with CUDA
+    enabled" - which is what CI's Linux and Windows runners hit. Setting
+    the flag before anything imports `model_management` also makes the
+    three CI platforms agree: without it macOS runs these tests against
+    MPS and probes the mlx backend, and Linux does not.
+    """
+    import comfy.cli_args
+    comfy.cli_args.args.cpu = True
+
+
 COMFYUI_ROOT = _comfyui_root()
-if COMFYUI_ROOT is not None and COMFYUI_ROOT not in sys.path:
-    sys.path.append(COMFYUI_ROOT)
+if COMFYUI_ROOT is not None:
+    if COMFYUI_ROOT not in sys.path:
+        sys.path.append(COMFYUI_ROOT)
+    _pin_comfyui_to_cpu()

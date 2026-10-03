@@ -84,6 +84,21 @@
 - **测试用 HTTP server 启动要 35 秒**：`HTTPServer.server_bind` 会做反向 DNS
   （`getfqdn`）。对策：测试里覆写 `server_bind`。
 
+- **CPU 版 torch 上 ComfyUI 的 `get_torch_device()` 直接 assert**：ComfyUI 的 `cpu_state`
+  默认是 `CPUState.GPU`，只有传了 `--cpu` 或检测到 MPS 时才改
+  （`comfy/model_management.py`）。CPU 版 torch 两个条件都不满足，于是
+  `get_torch_device()` 落到 `torch.cuda.current_device()`，抛
+  "Torch not compiled with CUDA enabled"——CI 的 Linux 和 Windows 上 19 个测试直接 error，
+  macOS 因为有 MPS 看不到。对策：`tests/conftest.py` 在任何人 import `model_management`
+  之前设 `comfy.cli_args.args.cpu = True`。这同时消掉一个平台差异：在此之前 macOS 拿 MPS
+  跑这些 CPU 测试、还会去探 mlx 后端，Linux 不会。
+- **删后端时集成测试没跟着改，而且被红色的 CI 盖住了**：706d768 删掉 fallback 后端后，
+  `test_comfy_integration.py` 还在给 `VedaSettings` 传 `backend='torch'`、还在断言节点显示
+  "PyTorch SDPA"，11 个测试从那时起一直 fail。因为上面那条让 CI 本来就是红的，这 11 个
+  混在 error 里没人注意到。对策：集成测试通过 monkeypatch `backends.resolve` 用
+  `tests/unit/reference_backend.py`，不再依赖哪个后端恰好存在；**CI 红的时候先修 CI，
+  不要让它一直红着**。
+
 - **malloc graph 导致原生 abort**：Windows + RTX 5070 的第一次端到端运行在第一次稀疏调用
   就 "Fatal Python error: Aborted"。CPU 集成测试发现不了（malloc graph 只在 CUDA 上启用）。
   对策见上；`tests/gpu` 之外，任何 GPU 改动都要用 `tools/e2e_minimax_h3.py` 在真实 ComfyUI 里

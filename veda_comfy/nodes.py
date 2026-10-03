@@ -67,7 +67,9 @@ def _predictor_path(name: str, node_id: str | None) -> str:
         raise ValueError(f'Predictor {name!r} is not in models/{FOLDER}. '
                          'Pick another file or put it there.')
     status = veda_status.NodeStatus(node_id)
-    status.show(f'Downloading {name} ({known.size / 2**20:.0f} MB, once)')
+    # Decimal MB, so the number matches what Hugging Face and the README
+    # quote (263 MiB would read as a different, smaller file).
+    status.show(f'Downloading {name} ({known.size / 10**6:.0f} MB, once)')
     bar = comfy.utils.ProgressBar(known.size, node_id=node_id)
     folder = folder_paths.get_folder_paths(FOLDER)[0]
     path = downloads.fetch(known, folder,

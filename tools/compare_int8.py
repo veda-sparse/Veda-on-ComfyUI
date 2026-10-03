@@ -118,7 +118,7 @@ def _int8_block_sparse_model(q, k, v, mask, layout):
     allowed = allowed & layout.slot_valid.bool()[None, None, :]
     scores = torch.einsum('qhd,khd->hqk', qd, kd) * scale
     probs = torch.softmax(scores.masked_fill(~allowed, float('-inf')),
-                          dim=-1).nan_to_num(0.0).half()
+                          dim=-1).nan_to_num(0.0).half().float()
     out = torch.einsum('hqk,khd->qhd', probs, v.half().float())
     return (out * layout.slot_valid.to(out.dtype)[:, None, None]).to(q.dtype)
 

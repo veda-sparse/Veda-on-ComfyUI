@@ -63,24 +63,23 @@ def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
     """QK accumulator viewed as the A operand of the FP8 PV gemm.
 
     quack's helper pairs two N tiles, which fills the 8-value A fragment
-    of the 16-bit m16n8k16 atom. The FP8 atom is m16n8k32, whose A
-    fragment holds 16 values, so four N tiles are gathered instead. The
-    two atoms also spread k over the threads differently -- the
-    accumulator gives each thread two neighbouring columns, the FP8 A
-    operand wants four -- which V is permuted to absorb; see
-    FP8_V_PERMUTATION.
+    of the 16-bit m16n8k16 atom. m16n8k32 holds 16 values per thread and
+    nests them differently: four k, then the second k block sixteen
+    further on, then the two rows (PTX orders the registers a0..a3 as
+    row g k+0..3, row g k+16..19, row g+8 k+0..3, row g+8 k+16..19). The
+    accumulator instead gives a column pair, then the row, then the tile,
+    so the view below re-nests it; what is left over is a pure reordering
+    of k, which FP8_V_PERMUTATION absorbs on V.
     """
     acc_layout = acc.layout
     assert acc_layout.shape[2] % 4 == 0
     l = cute.logical_divide(acc_layout, (None, None, 4))
+    stride_col, stride_row = l.stride[0][0], l.stride[0][1]
+    stride_tile = l.stride[2][0]
     view = cute.make_layout(
-        (
-            (l.shape[0][0], l.shape[0][1], l.shape[2][0]),
-            l.shape[1],
-            l.shape[2][1],
-        ),
+        ((2, 2, 2, 2), l.shape[1], l.shape[2][1]),
         stride=(
-            (l.stride[0][0], l.stride[0][1], l.stride[2][0]),
+            (stride_col, stride_tile, 2 * stride_tile, stride_row),
             l.stride[1],
             l.stride[2][1],
         ),

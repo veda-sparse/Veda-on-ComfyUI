@@ -71,13 +71,26 @@ RTX 5070 / SM120 / Windows 11 / torch 2.14.1+cu130 / triton-windows 3.8.0：
 | 精度 vs fp32 | 1.344%（= 装机版 SageAttention） |
 | 精度 vs 自己的算术（含 padding） | 0.133% |
 
+## TMA：实现了，但在消费卡上更慢
+
+稀疏走法每次循环才知道下一个 key 块的地址，所以每一轮都要花发射槽和寄存器去算一个硬件本可以
+按块坐标自己完成的拷贝——TMA 正是这个形状。实现在 `_attention_tma_kernel`，K 由
+`quantize_transposed` 直接量化成 `[H, D, slots]`，循环里连转置都没有。
+
+**实测在 RTX 5070 上慢 15%**（186.2 vs 157.4 ms，119k slot）。这不矛盾：TMA 在 Hopper 和数据中心
+Blackwell 上的主要收益来自把一个 key tile **多播给 cluster 里的多个 CTA**，而消费级 Blackwell
+有 TMA 却没有 thread block cluster——`cp.async.bulk.tensor` 只能落 `.shared::cta`，`num_ctas`
+必须是 1，不能 multicast。于是它退化成"另一种发起拷贝的方式"，而 8 KB 的块太小，摊不掉描述符
+的开销；`cp.async` 配 3 级流水已经把延迟藏住了。
+
+所以 `USE_TMA = False`。代码留着：SM90 / SM100 有 cluster，很可能是赢的，但**没人在那上面跑过
+`tools/tune_int8.py`**，而发布一个没测过的默认值正是在自己看不见的硬件上变慢的办法。
+
 ## 待做
 
-- **TMA（SM90 起）**：用设备端 `tl.make_tensor_descriptor` 按动态坐标取 K/V 块，省掉地址计算与
-  寄存器压力，让稀疏 gather 的开销不吃掉理论加速。**SM120/121 只能用 `.shared::cta`**——thread block
-  cluster 和 DSMEM 是 sm90/sm100 数据中心卡才有的，所以消费 Blackwell 上 `num_ctas` 必须是 1，
-  不能用 multicast。
-- 在 SM80 / SM89 / SM90 上回归，结果写进 hardware.md。
+- 在 SM80 / SM89 / SM90 / SM100 上回归，并在有 cluster 的卡上扫一次 TMA，结果写进 hardware.md。
+- kernel 对"完美线性缩放"的理想值是 66% 效率（端到端 2.95 s/步 对 1.95 s）。整条注意力路径
+  只占真实采样步的 31%，所以这件事排在换更大显存之后。
 
 ## 代码位置与接口
 

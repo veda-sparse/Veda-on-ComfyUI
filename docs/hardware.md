@@ -30,6 +30,25 @@
     是 793.8 ms（14.91x），即 INT8 kernel 快 1.50 倍。
   - 稠密吞吐参照：SageAttention INT8 125 TFLOPS，torch SDPA bf16 26 TFLOPS（Windows 版 torch
     的 SDPA 走不了 flash，这个基线偏慢）。
+  - launch 配置由 `tools/tune_int8.py` 在 119k slot 的真实问题上扫出来：4 warps / 3 stages
+    157.4 ms，上游给 head_dim 128 选的 8 warps 是 178.3 ms。**TMA 更慢**：即使把 K 量化成
+    `[H, D, slots]` 让循环里没有转置，也要 186.2 ms。合理——TMA 在 Hopper / 数据中心 Blackwell
+    上的主要收益是把一个 key tile 多播给 cluster 里的多个 CTA，而消费级 Blackwell 有 TMA 没有
+    cluster，8 KB 的块摊不掉描述符开销。TMA 代码保留在 `USE_TMA` 后面，等有 SM90/SM100 机器
+    再扫。
+  - **端到端**（`tools/e2e_minimax_h3.py`，真实 ComfyUI + 真实权重：T2VA FL2VA int8 +
+    8 步 Turbo LoRA，1344x768，124 帧 = 5.2 秒，8 步，seed 42）：
+
+    | 配置 | 每步 | 总计 | 其中注意力 |
+    |---|---|---|---|
+    | 稠密，ComfyUI 默认注意力 | 40.7 s | 342.1 s | ~31.1 s |
+    | 稠密，ComfyUI `--use-sage-attention` | 24.8 s | 230.9 s | ~15.2 s |
+    | Veda sparse INT8 | **14.0 s** | **130.1 s** | **4.41 s** |
+
+    即：SageAttention 的量化本身 1.64x，我们的稀疏在其之上再 1.77x（对默认路线合计 2.91x）；
+    只看注意力是 31.1 → 15.2 → 4.41。Veda 的 4.41 s/步里 kernel 2.95、gather 0.66、打分 0.46、
+    scatter 0.23、选块 0.10。这一步剩下的 9.6 s 是 MLP 与 12 GB 显存下的权重搬运，占 69%——
+    注意力侧的全部开销（1.46 s）清零也只有 1.11x，所以优化重心不在这里。
 - 2026-10-03，Apple M3 Pro（macOS 15），torch 2.14.1 + MLX 0.32.3：mlx 后端在 MPS 自检通过。
   `tools/bench_attention.py`（16:9，latent_t 37，38 228 token，90% 稀疏，随机打分器，单层）：
   MPS SDPA 全注意力 9.29 s；mlx 后端 3.52 s（2.64x）。

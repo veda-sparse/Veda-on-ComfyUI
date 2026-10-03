@@ -9,6 +9,7 @@
 # Built on Cute-DSL example: https://github.com/NVIDIA/cutlass/blob/main/examples/python/CuTeDSL/ampere/flash_attention_v2.py
 
 import math
+import os
 from types import SimpleNamespace
 from typing import Type, Callable, Optional
 from functools import partial
@@ -73,6 +74,8 @@ def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
     """
     acc_layout = acc.layout
     assert acc_layout.shape[2] % 4 == 0
+    if os.environ.get("VEDA_FP8_TRACE"):
+        print(f"[veda] fp8 A view from acc {acc_layout}", flush=True)
     l = cute.logical_divide(acc_layout, (None, None, 4))
     stride_col, stride_row = l.stride[0][0], l.stride[0][1]
     stride_tile = l.stride[2][0]
@@ -84,6 +87,8 @@ def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
             l.stride[2][1],
         ),
     )
+    if os.environ.get("VEDA_FP8_TRACE"):
+        print(f"[veda] fp8 A view -> {view}", flush=True)
     return cute.make_tensor(acc.iterator, view)
 
 

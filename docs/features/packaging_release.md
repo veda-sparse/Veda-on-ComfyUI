@@ -40,6 +40,10 @@
   节点、改分辨率到训练尺寸、T2VA 打开 8 步 Turbo LoRA、加说明），放在 `example_workflows/`，
   ComfyUI 会把它们列在模板浏览器的本节点分类下；节点的 `properties.models` 带打分器下载地址，
   缺失模型对话框可以一键下载。
+- **版本号有两处**（`pyproject.toml` 的 `version` 和 `veda_comfy/__init__.py` 的
+  `__version__`），`tests/unit/test_packaging.py` 把它们绑在一起，同时把上面那些 registry
+  字段规则（node id 的字符规则、`license` 必须是表、依赖必须带 marker、不能声明 torch、
+  `requirements.txt` 与 `dependencies` 一致）变成测试，而不是只写在文档里。
 - **CI**（`.github/workflows/tests.yml`）：Linux / Windows / macOS 上安装 ComfyUI v0.38.2 +
   CPU torch，跑 `ruff` 与 `tests/unit`（含 ComfyUI 集成测试）。
 - **发布**（`.github/workflows/publish_action.yml`）：main 上 `pyproject.toml` 变化时用 secret

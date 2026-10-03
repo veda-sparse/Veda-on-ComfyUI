@@ -188,9 +188,16 @@ docs/                知识库
   1. 在 main 上完成所有改动，CI 绿；涉及 GPU 的改动按 1.5 在对应硬件上验证。
   2. 修改 `pyproject.toml` 的 `version`（语义化版本：不兼容的节点输入改动升 MAJOR，新功能升
      MINOR，修复升 PATCH）以及 `veda_comfy/__init__.py` 的 `__version__`，提交
-     `release: x.y.z`。
-  3. push 到 main。`.github/workflows/publish_action.yml` 检测到 `pyproject.toml` 变化后用仓库
-     secret `REGISTRY_ACCESS_TOKEN` 发布；也可以本地 `comfy node publish`。
+     `release: x.y.z`。两处必须一致，`tests/unit/test_packaging.py` 会检查。
+  3. push 到 main。`.github/workflows/publish_action.yml` 的触发条件是 `pyproject.toml` 变化，
+     但 job 里会和 `HEAD~1` 比一次 `version`，**只有版本号真的变了才发布**（改 description
+     不会误发）。所以：
+     - 正常发布 = 改版本号 + push；
+     - 版本号没变就要发（例如首次发布，版本号本来就写好了），到 Actions 里手动
+       **Run workflow**（`workflow_dispatch` 不比版本号）。
+     用的是仓库 secret `REGISTRY_ACCESS_TOKEN`（`[tool.comfy].PublisherId` 那个 publisher 的
+     API key）。也可以本地 `comfy node publish`。发布前先 `comfy node validate` 和
+     `comfy node pack`。
   4. 打 tag `vX.Y.Z` 并在 GitHub release 里写更新说明（用户可见的变化、硬件状态变化）。
 - 本地检查打包内容：`comfy node pack` 生成 zip 后看一眼里面的文件列表。
 - 节点输入的名字和顺序是工作流 JSON 的一部分：改名、删输入、改顺序都会破坏用户已保存的

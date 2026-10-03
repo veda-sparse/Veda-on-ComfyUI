@@ -93,7 +93,7 @@ PATCHED_SHA256 = {
     'block_sparse_utils.py':
         '69b7a955e7a7cb756b0b475241e771feba7497670b570dd5ddb279e2b51ac7ad',
     'flash_fwd.py':
-        '7ffc56b74a73a6e9ba55c6d3bb55eee98d369febc802ab6ff0f8191f82f23f66',
+        '1dff6db66de895c69550d9246fc5e4d8ed09f93ad92e1db0e933d2192fd9a315',
     'flash_bwd.py':
         '0d7fffb59e3013d0e24172f7c897f9a0fec71549c62ed1b1b29e19358b33038c',
     'interface.py':

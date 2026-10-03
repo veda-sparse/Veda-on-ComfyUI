@@ -72,3 +72,35 @@ def test_fetch_error_says_what_to_do(tmp_path, monkeypatch):
         downloads.DEFAULT_PREDICTOR])
     with pytest.raises(downloads.DownloadError, match='HF_ENDPOINT'):
         downloads.fetch(known, str(tmp_path))
+
+
+@pytest.mark.parametrize('endpoint,sent', [
+    ('https://huggingface.co', True),
+    ('https://cdn-lfs.huggingface.co', True),
+    ('https://hf-mirror.com', False),
+    ('https://hf-mirror.com/huggingface.co/x', False),
+    ('https://huggingface.co.example.com', False),
+    ('https://nothuggingface.co', False),
+])
+def test_token_only_goes_to_hugging_face(endpoint, sent):
+    """HF_ENDPOINT names a mirror, and the README tells users behind a
+    firewall to set it, so the token must not follow it there."""
+    assert downloads._is_huggingface(endpoint) is sent
+
+
+def test_fetch_withholds_the_token_from_a_mirror(server, tmp_path,
+                                                 monkeypatch):
+    endpoint, payload = server
+    seen = {}
+    real = downloads.urllib.request.Request
+
+    def spy(url, headers=None, **kwargs):
+        seen.update(headers or {})
+        return real(url, headers=headers or {}, **kwargs)
+
+    monkeypatch.setattr(downloads.urllib.request, 'Request', spy)
+    monkeypatch.setenv('HF_TOKEN', 'secret-token')
+    monkeypatch.setenv('HF_ENDPOINT', endpoint)  # a 127.0.0.1 "mirror"
+    downloads.fetch(_known(payload), str(tmp_path / 'out'))
+    assert 'Authorization' not in seen
+    assert 'secret-token' not in repr(seen)

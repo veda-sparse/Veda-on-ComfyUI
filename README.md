@@ -70,8 +70,9 @@ To place it by hand, download
 into `ComfyUI/models/veda/` and refresh ComfyUI. Any `.safetensors` in
 that folder appears in the `predictor` list, so a predictor trained
 elsewhere is selected the same way. Behind a firewall, set `HF_ENDPOINT`
-(for example `https://hf-mirror.com`) before starting ComfyUI; `HF_TOKEN`
-is honoured for gated repositories.
+(for example `https://hf-mirror.com`) before starting ComfyUI. `HF_TOKEN`
+is honoured too, but it is only ever sent to huggingface.co and never
+follows `HF_ENDPOINT` to a mirror.
 
 ### Node text
 

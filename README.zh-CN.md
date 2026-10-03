@@ -58,7 +58,8 @@ block，Veda 根本不会被调用。节点检测到两者同时存在时会提�
 下载 `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`，放进
 `ComfyUI/models/veda/`，刷新 ComfyUI 即可。该目录下任何 `.safetensors` 都会出现在
 `predictor` 列表里，所以自己训练的打分器也是一样选。国内网络：启动 ComfyUI 前设置
-`HF_ENDPOINT`（例如 `https://hf-mirror.com`）；私有仓库支持 `HF_TOKEN`。
+`HF_ENDPOINT`（例如 `https://hf-mirror.com`）。私有仓库支持 `HF_TOKEN`，但它只会发给
+huggingface.co，不会跟着 `HF_ENDPOINT` 去镜像站。
 
 ### 节点上的文字
 

@@ -54,6 +54,19 @@
 ## 踩坑记录
 
 - **Registry 的 Icon 最大 400x400**：图标 SVG 的 width/height 设为 400（viewBox 不变）。
+- **审核看的是"像不像"，不只是"是不是"**（<https://docs.comfy.org/registry/standards>）。
+  硬性禁止的是 `eval` / `exec`、用 subprocess 在运行时 pip install、代码混淆。我们三条都没犯，
+  但 0.1.0 里有两处"长得很像"的代码，白白增加人工复核的成本，已经在 0.1.1 改掉：
+  - `__import__('sys')` 写在一个条件表达式里（只是懒得在模块顶部 `import sys`）——行内
+    `__import__` 正是动态导入混淆的典型形状。改成顶部 import。
+  - `subprocess.run(['sysctl', ...])` 只为了拿 Mac 的 CPU 名字做**显示标签**，而上一行的
+    `platform.processor()` 本来就是兜底。为一个字符串背一个 subprocess 调用不值得。
+  规矩：**不要让审核的人必须读懂我们的代码才能放过我们。**
+- **`HF_TOKEN` 不能跟着 `HF_ENDPOINT` 走**：`HF_ENDPOINT` 指的是镜像站，而 README 还主动
+  建议防火墙后的用户设它（`hf-mirror.com`），于是用户的 Hugging Face bearer token 会被按我们
+  的建议发给第三方。对策：`downloads._is_huggingface()` 只按 **host** 匹配
+  `huggingface.co` 及其子域才带 Authorization 头（`hf-mirror.com/huggingface.co/x`、
+  `huggingface.co.example.com` 这种都不算）。发布的打分器是公开的，镜像本来不需要 token。
 - **`permissions:` 里漏了 `contents: read`，checkout 自己的仓库报 "Repository not found"**：
   GitHub Actions 里只要声明了 `permissions` 块，没列出的 scope 全部变成 `none`。
   `publish_action.yml` 当时只写了 `issues: write`（publish-node-action 失败时要开 issue），

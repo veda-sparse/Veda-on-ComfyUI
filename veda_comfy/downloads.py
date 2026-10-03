@@ -11,6 +11,7 @@ import dataclasses
 import hashlib
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
@@ -56,6 +57,17 @@ class DownloadError(RuntimeError):
     """Download failed; the message tells the user what to do by hand."""
 
 
+def _is_huggingface(endpoint: str) -> bool:
+    """Whether `endpoint` is Hugging Face itself, so a token may go there.
+
+    Matches the host only, so a mirror that merely mentions the name in a
+    path or a look-alike domain does not qualify.
+    """
+    host = urllib.parse.urlsplit(endpoint).hostname or ''
+    host = host.lower()
+    return host == 'huggingface.co' or host.endswith('.huggingface.co')
+
+
 def _sha256(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -93,7 +105,12 @@ def fetch(known: KnownPredictor, folder: str,
         os.remove(partial)
         done = 0
     headers = {'User-Agent': 'Veda-on-ComfyUI'}
-    if os.environ.get('HF_TOKEN'):
+    # Only ever send the token to Hugging Face itself. HF_ENDPOINT is a
+    # mirror, and the README tells users behind a firewall to set it, so
+    # attaching their bearer token to whatever host it names would hand a
+    # third party their Hugging Face credentials on our own advice. The
+    # released predictor is public, so a mirror needs no token anyway.
+    if os.environ.get('HF_TOKEN') and _is_huggingface(endpoint):
         headers['Authorization'] = f'Bearer {os.environ["HF_TOKEN"]}'
     if 0 < done < known.size:
         headers['Range'] = f'bytes={done}-'

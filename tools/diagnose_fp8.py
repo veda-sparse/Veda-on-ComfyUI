@@ -87,6 +87,34 @@ def backend_mask_mod():
     return fa4_sm120._valid_key_mask_mod()
 
 
+def _lse(backend, q, k, v, mask, layout, fp8=False):
+    """Log-sum-exp of the scores, straight from the kernel."""
+    from veda_comfy.kernels.fa4 import block_sparsity, interface
+    scale = 128 ** -0.5
+    if fp8:
+        from veda_comfy.backends.fa4_sm120 import _to_fp8, _v_permutation
+        from veda_comfy.kernels.fa4.flash_fwd import FP8_P_SCALE  # noqa: F401
+        q, q_s = _to_fp8(q)
+        k, k_s = _to_fp8(k)
+        v, _ = _to_fp8(v)
+        v = v[_v_permutation(v.shape[0], v.device)]
+        v = v.permute(2, 1, 0).contiguous()[None]
+        scale *= q_s * k_s
+    else:
+        v = v[None]
+    tensors = block_sparsity.DenseBlockMaskTorch(
+        block_mask=(mask & layout.kv_ok)[None],
+        partial_kv_blocks=~layout.full_tile,
+        block_size=(tiling.TILE_SIZE, tiling.TILE_SIZE))
+    with torch.no_grad():
+        out = interface.flash_attn_func(
+            q[None], k[None], v, softmax_scale=scale,
+            mask_mod=backend_mask_mod(), aux_tensors=[layout.slot_valid],
+            block_sparse_tensors=tensors, return_lse=True)
+    lse = out[1]
+    return lse[0].float()[:, layout.slot_valid.bool()]
+
+
 def _rel(got: torch.Tensor, want: torch.Tensor, layout) -> str:
     real = layout.slot_valid.bool()
     a, b = got[real].float(), want[real].float()
@@ -112,6 +140,14 @@ def main() -> None:
     print(f'{info.label}: {fp8.name} against {bf16.name}')
 
     q, k, v, mask, layout = _problem(device, args.seq_len)
+
+    print('\nA. LSE (depends on QK and the softmax only, never on PV)')
+    lse_fp8 = _lse(fp8, q, k, v, mask, layout, fp8=True)
+    lse_bf16 = _lse(bf16, *(_round_trip(t) for t in (q, k, v)), mask, layout)
+    d = (lse_fp8 - lse_bf16).abs()
+    print(f'     max |diff| {d.max().item():.4f}   mean |diff| '
+          f'{d.mean().item():.4f}   bf16 range '
+          f'[{lse_bf16.min().item():.3f}, {lse_bf16.max().item():.3f}]')
 
     print('\n0. scale folding (bf16 kernel, operands scaled like FP8 does)')
     # The FP8 backend divides q and k by their amax scales and folds those

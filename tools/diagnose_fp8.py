@@ -133,10 +133,13 @@ def main() -> None:
     print('   ', _rel(got, want, layout))
 
     print('\n2. P only (V is identity-like, so the output is the softmax)')
+    # Only the first head_dim slots carry a one, so each output column is
+    # one probability rather than a sum over every slot that folds onto it.
     eye = torch.zeros_like(v)
-    idx = torch.arange(v.shape[0], device=device) % v.shape[2]
-    eye[torch.arange(v.shape[0], device=device)[:, None],
-        torch.arange(v.shape[1], device=device)[None, :], idx[:, None]] = 1.0
+    width = min(v.shape[2], v.shape[0])
+    rows = torch.arange(width, device=device)
+    eye[rows[:, None], torch.arange(v.shape[1], device=device)[None, :],
+        rows[:, None]] = 1.0
     print('   ', _rel(fp8.attend(q, k, eye, mask, layout),
                       bf16.attend(qr, kr, eye, mask, layout), layout))
 

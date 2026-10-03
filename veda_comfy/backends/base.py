@@ -36,11 +36,18 @@ class Backend(abc.ABC):
         name: Stable id used in logs and settings, e.g. 'fa4-sm89'.
         display: Name shown on the node, e.g. 'FA4 (SM89)'.
         dtypes: Input dtypes the kernel takes natively; others are cast.
+        tolerance: Largest pointwise error the self-test accepts, as a
+            fraction of the reference's absmax. This is a property of the
+            kernel's arithmetic, not a universal constant: a 16-bit kernel
+            lands near 0.5%, while a quantised one is bounded by its own
+            format and must say so, or the self-test rejects a correct
+            kernel for being quantised.
     """
 
     name: str = 'backend'
     display: str = 'backend'
     dtypes: tuple[torch.dtype, ...] = (torch.bfloat16, torch.float16)
+    tolerance: float = 0.02
 
     @abc.abstractmethod
     def attend(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -122,6 +129,8 @@ def self_test(backend: Backend, device: torch.device,
     if (got - dense.float()).abs().max().item() < 0.5 * gap:
         raise BackendUnavailable(f'{backend.name} ignores the block mask on '
                                  'this device (computes dense attention)')
-    if not err <= 0.02 * max(1.0, want.float().abs().max().item()):
+    limit = backend.tolerance * max(1.0, want.float().abs().max().item())
+    if not err <= limit:
         raise BackendUnavailable(f'{backend.name} gives wrong results on this '
-                                 f'device (max error {err:.3g})')
+                                 f'device (max error {err:.3g}, allowed '
+                                 f'{limit:.3g})')

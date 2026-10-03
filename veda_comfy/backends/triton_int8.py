@@ -38,6 +38,11 @@ class TritonInt8Backend(base.Backend):
     name = 'triton-int8'
     display = 'Triton INT8'
     dtypes = (torch.bfloat16, torch.float16)
+    # INT8 Q and K with one scale per block: measured 1.3% relative error
+    # on a dense problem and 2.7% pointwise on the padding-heavy self-test
+    # problem, which is the format's floor rather than a fault. 5% still
+    # catches the real ones (a mis-strided V read came out at 650%).
+    tolerance = 0.05
 
     def __init__(self, label: str):
         self.display = f'Triton INT8 ({label})'

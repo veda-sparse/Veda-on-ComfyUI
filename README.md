@@ -121,4 +121,5 @@ model runs its own attention.
 * Predictor: [Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview) (MiniMax H3 Community License)
 * Training code: [veda-sparse/Miowtion](https://github.com/veda-sparse/Miowtion)
 
-Code: MIT. Bundled FlashAttention-4: BSD-3-Clause. See [NOTICE.md](NOTICE.md).
+Code: MIT. The INT8 kernel's arithmetic comes from SageAttention v1:
+BSD-3-Clause. See [NOTICE.md](NOTICE.md).

@@ -1,16 +1,16 @@
 [project]
 name = "veda-sparse-attention"
 version = "0.1.0"
-description = "Veda learned sparse attention for MiniMax-H3 in ComfyUI: ~2-3x faster T2VA / FL2VA / R2VA video+audio generation, LoRA-compatible. NVIDIA (FlashAttention-4, Linux / Windows) and Apple silicon (MLX)."
+description = "Veda learned sparse attention for MiniMax-H3 in ComfyUI: ~2-3x faster T2VA / FL2VA / R2VA video+audio generation, LoRA-compatible. NVIDIA (Triton INT8, SM80 and newer, Linux / Windows) and Apple silicon (MLX)."
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"
-# Nothing beyond ComfyUI's own requirements. Optional fast kernels:
-# the sparse kernel, which is installed with the node.
 # Installed with the node, so the sparse kernel works without the user
 # doing anything. Triton is a real dependency now that the kernel is
 # written in it; on Linux torch already pulls the same package in, so this
-# is a no-op there far more often than not.
+# is a no-op there far more often than not. Every entry needs a marker:
+# Manager installs requirements as a batch and one unbuildable wheel
+# fails the whole node.
 dependencies = [
     "triton>=3.0; platform_system == 'Linux'",
     "triton-windows>=3.0; platform_system == 'Windows'",

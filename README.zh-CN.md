@@ -88,5 +88,6 @@ ROCm 和 CPU 没有 kernel：节点会说明，模型跑自己的注意力。
 * **国内网络？** 启动 ComfyUI 前设置 `HF_ENDPOINT=https://hf-mirror.com`，或手动下载打分器放到
   `models/veda`。
 
-许可：代码 MIT；附带的 FlashAttention-4 为 BSD-3-Clause；打分器沿用 MiniMax H3 Community License。
+许可：代码 MIT；INT8 kernel 的算术取自 SageAttention v1（BSD-3-Clause）；打分器沿用
+MiniMax H3 Community License。
 见 [NOTICE.md](NOTICE.md)。

@@ -25,6 +25,26 @@ except ImportError:  # reported by cute_atoms()
     cutlass = None
 
 
+def _mma_build(make_op):
+    """A jit body that builds one tiled MMA (values captured by closure).
+
+    Closure cells, not default arguments: the DSL traces parameters as
+    runtime values, so a bool default arrives as a DSL value and the op
+    rejects it.
+    """
+    def build(dummy):
+        cute.make_tiled_mma(cute.make_mma_atom(make_op()))
+
+    return build
+
+
+def _ldmatrix_build(op, transpose, dtype):
+    def build(dummy):
+        cute.make_copy_atom(op(transpose=transpose, num_matrices=4), dtype)
+
+    return build
+
+
 def _compiles(build) -> str | None:
     """None if `build` compiles for the resident GPU, else the reason.
 
@@ -107,10 +127,7 @@ def cute_atoms() -> None:
                                (16, 8, 32))),
     ]
     for name, make_op in mma_cases:
-        def build(dummy, make_op=make_op):
-            cute.make_tiled_mma(cute.make_mma_atom(make_op()))
-
-        reason = _compiles(build)
+        reason = _compiles(_mma_build(make_op))
         print(f'  {"ok   " if reason is None else "FAILS"} {name}'
               + ('' if reason is None else f': {reason}'))
 
@@ -123,11 +140,8 @@ def cute_atoms() -> None:
                        if n.startswith('LdMatrix') and n.endswith('Op')):
         op = getattr(warp, name)
         for transpose in (False, True):
-            def build(dummy, op=op, transpose=transpose):
-                cute.make_copy_atom(op(transpose=transpose, num_matrices=4),
-                                    cutlass.Float8E4M3FN)
-
-            reason = _compiles(build)
+            reason = _compiles(_ldmatrix_build(op, transpose,
+                                               cutlass.Float8E4M3FN))
             print(f'  {"ok   " if reason is None else "FAILS"} '
                   f'{name}(transpose={transpose})'
                   + ('' if reason is None else f': {reason}'))

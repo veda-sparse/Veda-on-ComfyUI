@@ -43,7 +43,9 @@ import triton.language as tl
 TILE = 128
 # Upstream's key block. One Veda tile is two of these.
 KEY_BLOCK = 64
-SUB = TILE // KEY_BLOCK
+# Measured by tools/tune_int8.py on an RTX 5070; upstream's 8 warps for
+# head_dim 128 is 12% slower here.
+WARPS, STAGES = 4, 3
 LOG2E = 1.4426950408889634
 # Set by tools/tune_int8.py to sweep launch options; None in production,
 # where recompiling on a user's machine would stall sampling.
@@ -67,6 +69,48 @@ def _quantize_kernel(X, Xq, Scale, stride_xn, stride_xh, stride_sh,
     quantized += 0.5 * tl.where(quantized >= 0, 1, -1)
     tl.store(Xq + offset, quantized.to(tl.int8))
     tl.store(Scale + head * stride_sh + blk, scale)
+
+
+@triton.jit
+def _quantize_t_kernel(X, Xq, Scale, stride_xn, stride_xh, stride_qd,
+                       stride_qh, stride_sh, D: tl.constexpr,
+                       BLK: tl.constexpr):
+    """As `_quantize_kernel`, but writes [H, D, slots] instead.
+
+    The PV gemm wants K with the contraction dim along rows. The pointer
+    path gets that for free by swizzling the index expression, but TMA
+    only ever hands back the block as it is laid out, so a transposing
+    load would cost a register shuffle per block. Writing K transposed
+    once, in a pass that was already touching every element, is cheaper.
+    """
+    blk = tl.program_id(0)
+    head = tl.program_id(1)
+    offs_n = blk * BLK + tl.arange(0, BLK)
+    offs_d = tl.arange(0, D)
+    x = tl.load(X + head * stride_xh + offs_n[:, None] * stride_xn
+                + offs_d[None, :]).to(tl.float32)
+    scale = tl.max(tl.abs(x)) / 127.0
+    scale = tl.where(scale > 0.0, scale, 1.0)
+    quantized = x / scale
+    quantized += 0.5 * tl.where(quantized >= 0, 1, -1)
+    out = (Xq + head * stride_qh + offs_d[None, :] * stride_qd
+           + offs_n[:, None])
+    tl.store(out, quantized.to(tl.int8))
+    tl.store(Scale + head * stride_sh + blk, scale)
+
+
+def quantize_transposed(x: torch.Tensor,
+                        block: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """[N, H, D] -> ([H, D, N] int8, [H, N // block] fp32 scales)."""
+    slots, heads, dim = x.shape
+    out = torch.empty((heads, dim, slots), dtype=torch.int8,
+                      device=x.device)
+    scale = torch.empty((heads, slots // block), dtype=torch.float32,
+                        device=x.device)
+    _quantize_t_kernel[(slots // block, heads)](
+        x, out, scale, x.stride(0), x.stride(1), out.stride(1),
+        out.stride(0), scale.stride(0), D=dim, BLK=block, num_warps=4)
+    return out, scale
 
 
 def quantize(x: torch.Tensor, block: int,
@@ -144,10 +188,11 @@ def _attention_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid, Out,
 
 @triton.jit
 def _attention_tma_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
-                          Out, slots, stride_n, stride_h, stride_vn,
-                          stride_vh, stride_qs, stride_ks, stride_ih,
-                          stride_iq, n_q_tiles, D: tl.constexpr,
-                          BLK: tl.constexpr, BLOCK_M: tl.constexpr):
+                          Out, slots, stride_n, stride_h, stride_kd,
+                          stride_kh, stride_vn, stride_vh, stride_qs,
+                          stride_ks, stride_ih, stride_iq, n_q_tiles,
+                          D: tl.constexpr, BLK: tl.constexpr,
+                          BLOCK_M: tl.constexpr):
     """The same attention, fetching K and V through TMA.
 
     A block-sparse walk reads key blocks at addresses it only learns inside
@@ -174,9 +219,11 @@ def _attention_tma_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
     q_scale = tl.load(Q_scale + head * stride_qs + query_tile)
     # One descriptor per head, built once outside the loop; the loop then
     # only varies the row coordinate.
+    # K is [H, D, slots]: the descriptor hands back [D, BLK], which is the
+    # orientation the gemm wants, so there is no transpose in the loop.
     k_desc = tl.make_tensor_descriptor(
-        K + head * stride_h, shape=[slots, D], strides=[stride_n, 1],
-        block_shape=[BLK, D])
+        K + head * stride_kh, shape=[D, slots], strides=[stride_kd, 1],
+        block_shape=[D, BLK])
     v_desc = tl.make_tensor_descriptor(
         V + head * stride_vh, shape=[slots, D], strides=[stride_vn, 1],
         block_shape=[BLK, D])
@@ -190,9 +237,9 @@ def _attention_tma_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
     for i in range(0, count):
         block = tl.load(index_row + i)
         start = block * BLK
-        k = k_desc.load([start, 0])
+        k = k_desc.load([0, start])
         k_scale = tl.load(K_scale + head * stride_ks + block)
-        qk = tl.dot(q, tl.trans(k)).to(tl.float32) * q_scale * k_scale
+        qk = tl.dot(q, k).to(tl.float32) * q_scale * k_scale
         qk = tl.where(offs_n[None, :] < tl.load(Valid + block), qk,
                       -float('inf'))
 
@@ -229,18 +276,19 @@ def _install_allocator() -> None:
 
 
 def key_blocks(index: torch.Tensor, count: torch.Tensor,
-               valid_count: torch.Tensor):
+               valid_count: torch.Tensor, block: int = KEY_BLOCK):
     """Kept tiles -> kept key blocks, which is what the kernel walks.
 
-    One 128-row tile is SUB key blocks. Expanding on the host keeps the
+    One 128-row tile is several key blocks. Expanding on the host keeps the
     kernel's loop flat and lets the per-block valid counts (a tile's real
     rows are a prefix) be sliced the same way.
     """
-    blocks = (index.to(torch.int32) * SUB)[..., None] + torch.arange(
-        SUB, device=index.device, dtype=torch.int32)
-    offsets = torch.arange(SUB, device=valid_count.device) * KEY_BLOCK
-    valid = (valid_count[:, None] - offsets).clamp_(0, KEY_BLOCK)
-    return (blocks.flatten(-2).contiguous(), (count * SUB).contiguous(),
+    sub = TILE // block
+    blocks = (index.to(torch.int32) * sub)[..., None] + torch.arange(
+        sub, device=index.device, dtype=torch.int32)
+    offsets = torch.arange(sub, device=valid_count.device) * block
+    valid = (valid_count[:, None] - offsets).clamp_(0, block)
+    return (blocks.flatten(-2).contiguous(), (count * sub).contiguous(),
             valid.flatten().to(torch.int32).contiguous())
 
 
@@ -263,27 +311,32 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     """
     slots, heads, dim = q.shape
     scale = (dim ** -0.5) if softmax_scale is None else softmax_scale
+    use_tma = _tma_available(torch.cuda.get_device_capability(q.device))
+    key_block, warps, stages = KEY_BLOCK, WARPS, STAGES
+    if OVERRIDE is not None:  # tools/tune_int8.py sweeps these
+        use_tma, key_block = OVERRIDE['tma'], OVERRIDE['key_block']
+        warps, stages = OVERRIDE['num_warps'], OVERRIDE['num_stages']
     q_int8, q_scale = quantize(q, TILE, pre_scale=scale * LOG2E)
-    k_int8, k_scale = quantize(k, KEY_BLOCK)
-    blocks, block_count, valid = key_blocks(index, count, valid_count)
+    if use_tma:
+        k_int8, k_scale = quantize_transposed(k, key_block)
+    else:
+        k_int8, k_scale = quantize(k, key_block)
+    blocks, block_count, valid = key_blocks(index, count, valid_count,
+                                            key_block)
     v16 = v.to(torch.float16)
     out = torch.empty_like(q)
+    options = dict(n_q_tiles=slots // TILE, D=dim, BLK=key_block,
+                   BLOCK_M=TILE, num_warps=warps, num_stages=stages)
     common = (q_scale.stride(0), k_scale.stride(0), blocks.stride(0),
               blocks.stride(1))
     grid = (slots // TILE, heads)
-    options = dict(n_q_tiles=slots // TILE, D=dim, BLK=KEY_BLOCK,
-                   BLOCK_M=TILE, num_warps=8, num_stages=4)
-    use_tma = _tma_available(torch.cuda.get_device_capability(q.device))
-    if OVERRIDE is not None:  # tools/tune_int8.py sweeps these
-        use_tma = OVERRIDE['tma']
-        options.update(num_warps=OVERRIDE['num_warps'],
-                       num_stages=OVERRIDE['num_stages'])
     if use_tma:
         _install_allocator()
         _attention_tma_kernel[grid](
             q_int8, k_int8, v16, q_scale, k_scale, blocks, block_count,
-            valid, out, slots, q.stride(0), q.stride(1), v16.stride(0),
-            v16.stride(1), *common, **options)
+            valid, out, slots, q.stride(0), q.stride(1), k_int8.stride(1),
+            k_int8.stride(0), v16.stride(0), v16.stride(1), *common,
+            **options)
     else:
         _attention_kernel[grid](
             q_int8, k_int8, v16, q_scale, k_scale, blocks, block_count,

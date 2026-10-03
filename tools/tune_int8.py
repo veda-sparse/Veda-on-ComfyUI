@@ -30,7 +30,7 @@ HEADS, DIM = 24, 128
 
 
 def _problem(device, latent_t, sparsity):
-    grid = (latent_t, 48, 80)
+    grid = (latent_t, 24, 42)  # 16:9, as tools/bench_attention.py uses
     shape = tiling.TileShape(1, 8, 16)
     text, audio = 512, 2 * round(latent_t * 17 / 5 / 24 * 40)
     span = tiling.TiledSpan(text + audio, grid, shape)
@@ -72,22 +72,22 @@ def main() -> None:
     print(f'SM{capability[0]}{capability[1]}: {layout.num_slots} slots x '
           f'{HEADS} heads, {args.sparsity:g}% sparse')
     base = None
-    for tma, warps, stages in itertools.product(
+    for tma, warps, stages, key in itertools.product(
             (False, True) if sparse_int8._tma_available(capability)
-            else (False,), (4, 8), (2, 3, 4)):
+            else (False,), (4, 8), (2, 3), (64, 128)):
         sparse_int8.OVERRIDE = dict(tma=tma, num_warps=warps,
-                                    num_stages=stages)
+                                    num_stages=stages, key_block=key)
         try:
             ms = _time(lambda: sparse_int8.attend(q, k, v, index, count,
                                                   layout.valid_count))
         except Exception as error:
-            print(f'  {"tma " if tma else "ptr "} warps {warps} stages '
-                  f'{stages}: {type(error).__name__}: '
+            print(f'  {"tma" if tma else "ptr"} w{warps} s{stages} '
+                  f'k{key}: {type(error).__name__}: '
                   f'{str(error).splitlines()[0][:60]}')
             continue
         base = ms if base is None else base
-        print(f'  {"tma " if tma else "ptr "} warps {warps} stages '
-              f'{stages}: {ms:7.1f} ms  ({base / ms:4.2f}x)')
+        print(f'  {"tma" if tma else "ptr"} w{warps} s{stages} k{key}: '
+              f'{ms:7.1f} ms  ({base / ms:4.2f}x)')
     sparse_int8.OVERRIDE = None
 
 

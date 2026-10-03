@@ -107,7 +107,6 @@ def build_graph(args, veda: bool, prefix: str) -> dict:
                                  'reference_sparsity': args.sparsity,
                                  'full_attention_layers': '',
                                  'full_attention_steps': '',
-                                 'backend': args.backend,
                                  'verbose': args.verbose}}
         model = ['3', 0]
     graph['11'] = {'class_type': 'BasicGuider',
@@ -187,7 +186,6 @@ def main() -> None:
     parser.add_argument('--prompt', default=None)
     parser.add_argument('--ref-image', default='example.png',
                         help='R2VA reference image in ComfyUI/input')
-    parser.add_argument('--backend', default='auto')
     parser.add_argument('--sparsity', default='90%')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--unet', default=None)

@@ -632,6 +632,10 @@ class _Sm8xFastFwdEntry:
         self.lse_shape, self.need_lse = lse_shape, need_lse
         self.default_scale = default_scale
         self.bm_shape = bm_shape
+        # FP8 operands are handed to the compiled kernel as uint8 (the
+        # slow path does the same); replaying with the raw fp8 tensor
+        # fails the launch's dtype check.
+        self.operand_dtype = call_args[0].dtype
 
     def __call__(self, q, k, v, softmax_scale, bst, aux_tensors, aux_scalars):
         device = q.device
@@ -645,7 +649,12 @@ class _Sm8xFastFwdEntry:
         if part is not None and part.dtype == torch.bool:
             part = part.view(torch.uint8)
         args = list(self.call_args)  # per-call copy: thread-safe, keeps no caller tensors alive
-        args[0], args[1], args[2] = q.detach(), k.detach(), v.detach()
+        operands = []
+        for t in (q, k, v):
+            t = t.detach()
+            operands.append(t if t.dtype == self.operand_dtype
+                            else t.view(self.operand_dtype))
+        args[0], args[1], args[2] = operands
         args[3], args[4] = out, lse
         args[5] = self.default_scale if softmax_scale is None else softmax_scale
         args[self.i_sparse] = (bm, part)

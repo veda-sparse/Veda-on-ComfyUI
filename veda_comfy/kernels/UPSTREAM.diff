@@ -1876,7 +1876,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          elif arch // 10 == 9:
              sparse_q = get_sparse_q_block_size(block_sparse_tensors, seqlen_q)
              cfg = _tile_size_fwd_sm90(
-@@ -535,6 +577,78 @@
+@@ -535,6 +577,87 @@
  
  
  _compute_blocks_to_batch.compile_cache = get_jit_cache("blocks_to_batch")
@@ -1932,6 +1932,10 @@ fa4: forked from flash-attn-4 4.0.0b32
 +        self.lse_shape, self.need_lse = lse_shape, need_lse
 +        self.default_scale = default_scale
 +        self.bm_shape = bm_shape
++        # FP8 operands are handed to the compiled kernel as uint8 (the
++        # slow path does the same); replaying with the raw fp8 tensor
++        # fails the launch's dtype check.
++        self.operand_dtype = call_args[0].dtype
 +
 +    def __call__(self, q, k, v, softmax_scale, bst, aux_tensors, aux_scalars):
 +        device = q.device
@@ -1945,7 +1949,12 @@ fa4: forked from flash-attn-4 4.0.0b32
 +        if part is not None and part.dtype == torch.bool:
 +            part = part.view(torch.uint8)
 +        args = list(self.call_args)  # per-call copy: thread-safe, keeps no caller tensors alive
-+        args[0], args[1], args[2] = q.detach(), k.detach(), v.detach()
++        operands = []
++        for t in (q, k, v):
++            t = t.detach()
++            operands.append(t if t.dtype == self.operand_dtype
++                            else t.view(self.operand_dtype))
++        args[0], args[1], args[2] = operands
 +        args[3], args[4] = out, lse
 +        args[5] = self.default_scale if softmax_scale is None else softmax_scale
 +        args[self.i_sparse] = (bm, part)
@@ -1955,7 +1964,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
  
  def _flash_attn_fwd(
-@@ -599,6 +713,30 @@
+@@ -599,6 +722,30 @@
          t is not None and t.requires_grad for t in (q, k, v, qv, learnable_sink)
      )
      fake_mode = is_fake_mode()
@@ -1986,7 +1995,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      q, k, v, qv = [maybe_contiguous(t) for t in (q, k, v, qv)]
      assert q is not None or qv is not None
      assert v is not None
-@@ -630,10 +768,22 @@
+@@ -630,10 +777,22 @@
          seqlen_k = v.shape[-3]
      num_head_kv = v.shape[-2]
      head_dim_v = v.shape[-1]
@@ -2010,7 +2019,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          else:
              assert k is None or k.shape == (num_pages, page_size, num_head_kv, head_dim)
              assert v.shape == (num_pages, page_size, num_head_kv, head_dim_v)
-@@ -787,7 +937,10 @@
+@@ -787,7 +946,10 @@
  
      dtype = torch2cute_dtype_map[q_dtype]
      if is_fp8:
@@ -2022,7 +2031,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      use_block_sparsity = block_sparse_tensors is not None
  
      causal, local, window_size_left, window_size_right = _resolve_causal_local_window(
-@@ -922,7 +1075,18 @@
+@@ -922,7 +1084,18 @@
      is_dense_noncausal = not is_varlen and not causal and not local
      use_clc_scheduler = requested_use_clc_scheduler and not is_varlen_mha and not is_dense_noncausal
  
@@ -2042,7 +2051,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          # NB: pack_gqa requires block sparse head dim == 1 (broadcasted)
          head_dim_idx = 0 if block_sparse_tensors.mask_block_cnt.ndim == 2 else 1
          if pack_gqa and block_sparse_tensors.mask_block_cnt.shape[head_dim_idx] != 1:
-@@ -945,7 +1109,22 @@
+@@ -945,7 +1118,22 @@
      normalized_block_sparse_tensors = None
      q_subtile_factor = 1
      kv_subtile_factor = 1
@@ -2066,7 +2075,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          block_sparse_config = normalize_block_sparse_config(
              block_sparse_tensors,
              batch_size=batch_size,
-@@ -954,7 +1133,9 @@
+@@ -954,7 +1142,9 @@
              seqlen_k=seqlen_k,
              block_size=(tile_m, tile_n),
              q_stage=q_stage,
@@ -2077,7 +2086,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          )
          normalized_block_sparse_tensors = block_sparse_config.tensors
          block_sparse_broadcast_pattern = block_sparse_config.broadcast_pattern
-@@ -1193,8 +1374,8 @@
+@@ -1193,8 +1383,8 @@
          q_descale is not None,
          k_descale is not None,
          v_descale is not None,
@@ -2088,7 +2097,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          tile_m,
          tile_n,
          q_stage,
-@@ -1273,7 +1454,9 @@
+@@ -1273,7 +1463,9 @@
          )
  
          sparse_tensors = None
@@ -2099,7 +2108,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              sparse_tensors = to_cute_block_sparse_tensors(normalized_block_sparse_tensors)
  
          cute_aux_tensors = None
-@@ -1326,6 +1509,8 @@
+@@ -1326,6 +1518,8 @@
                  score_mod=score_mod,
                  mask_mod=mask_mod,
                  has_aux_tensors=aux_tensors is not None,
@@ -2108,7 +2117,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              )
          elif arch // 10 == 9:
              assert not is_split_kv, "SplitKV not supported on SM 9.0"
-@@ -1418,8 +1603,11 @@
+@@ -1418,8 +1612,11 @@
                      fa_fwd_kwargs["has_tile_count_semaphore"] = tile_count_semaphore is not None
                  fa_fwd = flash_fwd_obj_cls(head_dim, head_dim_v, **fa_fwd_kwargs)
          elif arch // 10 == 12:
@@ -2122,7 +2131,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              assert page_table is None, "Paged KV not supported on SM 12.0 in this PR"
              assert not is_split_kv, "SplitKV not supported on SM 12.0 in this PR"
              fa_fwd = FlashAttentionForwardSm120(
-@@ -1438,6 +1626,8 @@
+@@ -1438,6 +1635,8 @@
                  score_mod=score_mod,
                  mask_mod=mask_mod,
                  has_aux_tensors=aux_tensors is not None,
@@ -2131,7 +2140,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              )
          else:
              raise ValueError(
-@@ -1573,8 +1763,13 @@
+@@ -1573,8 +1772,13 @@
              ]
              if arch // 10 in [10, 11]:
                  call_args.append(descale_tensors)
@@ -2147,7 +2156,7 @@ fa4: forked from flash-attn-4 4.0.0b32
                      normalized_block_sparse_tensors.mask_block_cnt,
                      normalized_block_sparse_tensors.mask_block_idx,
                      normalized_block_sparse_tensors.full_block_cnt,
-@@ -1584,8 +1779,10 @@
+@@ -1584,8 +1788,10 @@
                      normalized_block_sparse_tensors.dq_write_order,
                      normalized_block_sparse_tensors.dq_write_order_full,
                  )
@@ -2160,7 +2169,7 @@ fa4: forked from flash-attn-4 4.0.0b32
                  AuxData(aux_tensors, aux_scalars),
              ])
              if use_dedicated_hd256_kernel:
-@@ -1611,6 +1808,13 @@
+@@ -1611,6 +1817,13 @@
                      cu_total_splits_m_blocks,
                  ])
              _flash_attn_fwd.compile_cache[compile_key](*call_args)
@@ -2174,7 +2183,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      if is_split_kv:
          _flash_attn_fwd_combine(
              out_partial,
-@@ -1629,6 +1833,21 @@
+@@ -1629,6 +1842,21 @@
          # that this host-side zeroing is only needed when is_split_kv=False.
          tile_count_semaphore.zero_()
      return out, lse, p, row_max
@@ -2196,7 +2205,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
  
  _flash_attn_fwd.compile_cache = get_jit_cache("fwd")
-@@ -1939,7 +2158,9 @@
+@@ -1939,7 +2167,9 @@
      aux_scalars = tuple(aux_scalars) if aux_scalars else None
      fake_mode = is_fake_mode()
      arch = _get_device_arch()
@@ -2207,7 +2216,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      if block_sparse_tensors is not None:
          assert (
              cu_seqlens_q is None
-@@ -1978,8 +2199,12 @@
+@@ -1978,8 +2208,12 @@
          causal, window_size_left, window_size_right
      )
  
@@ -2222,7 +2231,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          m_block_size = 64
          n_block_size = 64
          if head_dim <= 64:
-@@ -1988,21 +2213,37 @@
+@@ -1988,21 +2222,37 @@
          else:
              num_stages_Q = 1
              num_stages_dO = 1
@@ -2268,7 +2277,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      elif arch // 10 == 9:
          cfg = _tile_size_bwd_sm90(
              head_dim,
-@@ -2345,7 +2586,7 @@
+@@ -2345,7 +2595,7 @@
      )
      # num_threads: SM90 derives from BwdConfig.num_wg, SM120 is set to 128 above,
      # SM100/SM110 uses default from function signature (384).
@@ -2277,7 +2286,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          num_threads = 384
  
      # Backward kernel: compute dk, dv, dq_accum.
-@@ -2358,7 +2599,27 @@
+@@ -2358,7 +2608,27 @@
  
      block_sparse_broadcast_pattern = None
      normalized_block_sparse_tensors = None
@@ -2306,7 +2315,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          (
              normalized_block_sparse_tensors,
              block_sparse_broadcast_pattern,
-@@ -2391,7 +2652,7 @@
+@@ -2391,7 +2661,7 @@
                  )
      if (
          normalized_block_sparse_tensors is not None
@@ -2315,7 +2324,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      ):
          spt = normalized_block_sparse_tensors.spt and deterministic
      else:
-@@ -2434,6 +2695,7 @@
+@@ -2434,6 +2704,7 @@
              aux_scalar_metadata,
              use_block_sparsity,
              q_subtile_factor,
@@ -2323,7 +2332,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              block_sparse_broadcast_pattern,
              get_broadcast_dims(q),
              get_broadcast_dims(k),
-@@ -2515,6 +2777,15 @@
+@@ -2515,6 +2786,15 @@
          ]
          if arch // 10 in [8, 12]:
              flash_bwd_obj_cls = FlashAttentionBackwardSm120 if arch // 10 == 12 else FlashAttentionBackwardSm80
@@ -2339,7 +2348,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              fa_bwd_obj = flash_bwd_obj_cls(
                  dtype,
                  head_dim,
-@@ -2537,6 +2808,7 @@
+@@ -2537,6 +2817,7 @@
                  V_in_regs=V_in_regs,
                  score_mod=score_mod,
                  score_mod_bwd=score_mod_bwd,
@@ -2347,7 +2356,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              )
          elif arch // 10 == 9:
              fa_bwd_obj = FlashAttentionBackwardSm90(
-@@ -2622,7 +2894,9 @@
+@@ -2622,7 +2903,9 @@
  
          # Block sparse tensors for backward use Q-direction indexing (transposed from forward).
          sparse_tensors_compile = None
@@ -2358,7 +2367,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              sparse_tensors_compile = to_cute_block_sparse_tensors(normalized_block_sparse_tensors)
          dq_accum_tensor = dq_tensor if use_dedicated_hd256_kernel else dq_accum_tensor
  
-@@ -2693,6 +2967,11 @@
+@@ -2693,6 +2976,11 @@
              dV_semaphore,
              AuxData(aux_tensors, aux_scalars),
              (
@@ -2370,7 +2379,7 @@ fa4: forked from flash-attn-4 4.0.0b32
                  normalized_block_sparse_tensors.mask_block_cnt,
                  normalized_block_sparse_tensors.mask_block_idx,
                  normalized_block_sparse_tensors.full_block_cnt,
-@@ -2727,8 +3006,11 @@
+@@ -2727,8 +3015,11 @@
              num_threads_post_dQ = 128 if dQ_single_wg else cfg.num_wg * 128
              num_threads_post_dKV = cfg.num_wg * 128
          else:
@@ -2384,7 +2393,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
          _bwd_postprocess_convert(
              dq_accum, dq, softmax_scale,
-@@ -3442,7 +3724,11 @@
+@@ -3442,7 +3733,11 @@
          ctx.score_mod_bwd = score_mod_bwd 
          ctx.mask_mod = mask_mod
          ctx.aux_scalars = aux_scalars
@@ -2396,7 +2405,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          ctx.gather_bwd_token_chunk = gather_bwd_token_chunk
          ctx.set_materialize_grads(False)
          return out, lse
-@@ -3478,6 +3764,18 @@
+@@ -3478,6 +3773,18 @@
              else:
                  return dq, dk, dv, dqv, None, None, None, None, dsink, *((None,) * 14)
          else:
@@ -2415,7 +2424,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              bwd_result = _flash_attn_bwd(
                  q,
                  k,
-@@ -3775,6 +4073,36 @@
+@@ -3775,6 +4082,36 @@
              "the backward will run unchunked (full-size dS transient).",
              stacklevel=2,
          )

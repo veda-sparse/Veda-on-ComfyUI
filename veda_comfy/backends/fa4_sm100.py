@@ -2,9 +2,7 @@
 B300, Thor).
 
 Upstream FA4 implements block sparsity on Blackwell datacenter parts
-natively, so this backend runs the private vendored copy of unmodified
-upstream FA4 4.0.0b32 (`veda_comfy/_vendor/fa4_upstream`), never the
-SM8x-patched one.
+natively, so this backend runs Veda's FA4 fork (`veda_comfy/kernels/fa4`).
 
 One wrinkle: on arch 10 / 11 FA4 picks q_stage = 2 whenever seqlen_q > 128,
 which makes the sparse Q block 256 rows, while Veda's tiles are 128. The
@@ -41,9 +39,9 @@ _Q_STAGE_ONE = threading.local()
 def _modules():
     import cutlass  # pylint: disable=import-outside-toplevel
     import cutlass.cute as cute  # pylint: disable=import-outside-toplevel
-    from .._vendor.fa4_upstream import block_sparsity  # pylint: disable=import-outside-toplevel
-    from .._vendor.fa4_upstream import interface  # pylint: disable=import-outside-toplevel
-    from .._vendor.fa4_upstream import utils  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import block_sparsity  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import interface  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import utils  # pylint: disable=import-outside-toplevel
     return cutlass, cute, block_sparsity, interface, utils
 
 
@@ -72,7 +70,7 @@ def _install_q_stage_hook() -> None:
         hasattr(interface, 'FwdConfig')) else set()
     if original is None or 'q_stage' not in fields:
         raise base.BackendUnavailable(
-            'vendored FA4 internals changed (_get_fwd_config / FwdConfig.'
+            'FA4 fork internals changed (_get_fwd_config / FwdConfig.'
             'q_stage); re-validate fa4-sm100 before use')
 
     @functools.wraps(original)

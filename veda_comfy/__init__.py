@@ -4,7 +4,8 @@ Layout:
   core/      device-agnostic torch: tiling, plans, predictor, selection,
              the per-call engine (no ComfyUI imports)
   backends/  one module per kernel family, isolated from each other
-  _vendor/   generated private copies of FlashAttention-4 (do not edit)
+  kernels/   our FlashAttention-4 CuTe fork (fa4/ + the quack/ helpers
+             it needs); edited directly, see docs/features/fa4_fork.md
   nodes.py, comfy_patch.py, status.py  the ComfyUI side
 """
 

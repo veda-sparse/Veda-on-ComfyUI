@@ -1,13 +1,14 @@
 #!/bin/sh
 # Blocks commits whose added lines contain secrets or machine-local
-# information (AGENTS.md 1.3). Generated vendor code is exempt (it is
-# rebuilt from a hash-pinned upstream wheel by tools/vendor_fa4.py).
+# information (AGENTS.md 1.3). The FA4 fork is exempt: it is
+# upstream-derived code reviewed through veda_comfy/kernels/UPSTREAM.diff,
+# and its PTX spec references look like IP addresses to the scanner.
 . "$(git rev-parse --show-toplevel)/.githooks/leak_patterns.sh"
 added="$(mktemp)"
 trap 'rm -f "$added"' EXIT
 # One line per added line: "<file>: <text>".
 git diff --cached -U0 --no-color --diff-filter=ACMR -- . \
-        ':(exclude)veda_comfy/_vendor' |
+        ':(exclude)veda_comfy/kernels/fa4' ':(exclude)veda_comfy/kernels/quack' |
     awk '/^\+\+\+ /{file=substr($0, 7); next} /^\+/{print file ": " substr($0, 2)}' \
     > "$added"
 hits="$(leak_scan "$added" staged)"

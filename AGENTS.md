@@ -15,7 +15,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 - `veda_comfy/core`：与设备、与 ComfyUI 都无关的纯 torch 逻辑（tile 排列、方案表、打分器、
   选择规则、单次调用引擎）。规则与 Miowtion 训练时一致，是契约，不是实现细节。
 - `veda_comfy/backends`：每个 kernel 家族一个模块，彼此隔离（见 1.6）。
-- `veda_comfy/_vendor`：生成的 FA4 私有副本，**禁止手改**（见 3）。
+- `veda_comfy/kernels`：**我们自己维护的 FA4 CuTe fork**（含它需要的 QuACK 模块），直接编辑（见 3）。
 
 ## 1. 基本规则（必须遵守）
 
@@ -42,7 +42,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
   |---|---|
   | `veda` | `veda_comfy/core`、`settings.py`、`hardware.py` |
   | `backends` | `veda_comfy/backends/*`（一次只改一个后端时写成 `backends/fa4-sm120:` 也可以） |
-  | `kernels` | `veda_comfy/_vendor`、`tools/vendor_fa4.py`、`tools/fa4_patches` |
+  | `kernels` | `veda_comfy/kernels`（FA4 CuTe fork）、`tools/fa4_upstream_diff.py` |
   | `comfy` | `nodes.py`、`comfy_patch.py`、`status.py`、`downloads.py`、示例工作流 |
   | `install` | `install_fa4.*`、`requirements*.txt` |
   | `release` | `pyproject.toml` 版本号与发布 |
@@ -55,8 +55,8 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
   GPU 相关改动没有在对应硬件上验证的，必须写明"GPU 未验证"以及缺了哪个架构。
 - **一个提交只做一件事**，每个提交单独 checkout 都能通过 `pytest tests/unit`；代码、测试、
   文档放在同一个提交里。
-- 不要提交：权重、`*.safetensors`、`models/`、`output/`、密钥、超过 1 MB 的文件（生成的
-  `_vendor` 例外，它由工具从锁定的上游生成）。
+- 不要提交：权重、`*.safetensors`、`models/`、`output/`、密钥、超过 1 MB 的文件
+  （`veda_comfy/kernels` 例外：它是 fork 的源码）。
 
 ### 1.3 本地信息与密钥：一律不进仓库
 
@@ -72,7 +72,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 
 ### 1.4 编码风格
 
-- 遵循 Google Python Style Guide：4 空格、行宽 80（`ruff check .` 必须通过，`_vendor` 除外）、
+- 遵循 Google Python Style Guide：4 空格、行宽 80（`ruff check .` 必须通过，FA4 fork 除外）、
   `snake_case` / `CapWords` / `UPPER_CASE`、模块私有符号加 `_` 前缀、Google 风格 docstring。
 - 公共函数写类型注解；张量参数在 docstring 里写 shape 与 dtype，例如 `q: [S, H, D] bf16`。
 - 参数不合法时显式 `raise`，错误信息是给用户看的：说清楚哪里错了、应该怎么写
@@ -88,7 +88,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 - **直接在 `main` 上提交并 push，不使用 dev 分支。必须经过测试后才能 push**：
   1. `pytest tests/unit` 全部通过（CPU；有 ComfyUI checkout 时包含集成测试，见
      `tests/conftest.py`），`ruff check .` 通过。CI 在 Linux / Windows / macOS 上跑同样的测试。
-  2. 改动涉及某个后端或 `_vendor` 时，`pytest tests/gpu` 在**对应架构**的机器上通过，并把
+  2. 改动涉及某个后端或 `veda_comfy/kernels` 时，`pytest tests/gpu` 在**对应架构**的机器上通过，并把
      结果（硬件、OS、commit、耗时）写进 `docs/hardware.md` 的验证记录。
   3. push 前先 `git fetch`；远端前进时 `git merge --ff-only` 或在自己的提交之上重新整理。
      禁止 `git push --force` 到 main（用户明确要求改写历史时除外，用 `--force-with-lease`）。
@@ -109,9 +109,9 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
   受影响的架构上重跑 `tests/gpu`。
 - 每个后端在使用前都要通过 `base.self_test`（包括"不能忽略块掩码"的检查）。新增后端必须
   写进 `backends/__init__.py` 的候选表，并在 `docs/hardware.md` 登记状态。
-- `_vendor/fa4_sm8x` 被 `fa4-sm80` 和 `fa4-sm120` 共用（SM120 的 kernel 继承 SM80 的类），
-  改它（即改 `tools/fa4_patches`）必须同时在 SM8x 和 SM12x 上回归；`_vendor/fa4_upstream`
-  被 `fa4-sm90` 和 `fa4-sm100` 共用，同理。
+- `veda_comfy/kernels/fa4` 被**所有** FA4 后端共用。改公共部分（interface、ampere_helpers、
+  QuACK 辅助）必须在所有能摸到的架构上回归；只改某个 `flash_fwd_smXX.py` 时影响面才局限在那个
+  家族。SM120 的 kernel 继承 SM80 的类，所以改 SM80 必然影响 SM120。
 - 修一个后端的问题，只改那个后端的文件；需要动 `core/` 或 `base.py` 时单独提交并说明影响面。
 
 ### 1.7 跨平台（Windows / Linux / macOS）
@@ -145,11 +145,13 @@ veda_comfy/
   core/              tiling / plans / bundle / predictor / selection / h3_layout /
                      engine / reference（纯 torch，不 import ComfyUI）
   backends/          base + 每个 kernel 家族一个模块（见 1.6）
-  _vendor/           生成的 FA4 副本（禁止手改）
+  kernels/           FA4 CuTe fork（fa4/ + 它需要的 quack/，直接编辑；
+                     UPSTREAM.diff 是相对上游的 provenance）
 example_workflows/   示例工作流（由 tools/make_example_workflows.py 生成）
 assets/              图标
-tools/               维护工具：vendor_fa4.py、fa4_patches/、make_example_workflows.py、
-                     bench_attention.py
+tools/               维护工具：fa4_upstream_diff.py、probe_gpu_kernels.py、
+                     make_example_workflows.py、bench_attention.py、
+                     e2e_minimax_h3.py
 tests/unit/          CPU 测试（每次提交前必须全过）
 tests/gpu/           GPU 测试（无 GPU 时自动 skip）
 docs/                知识库
@@ -166,12 +168,16 @@ docs/                知识库
 - **运行依赖为零**：只用 ComfyUI 已有的 torch / safetensors / numpy。任何新依赖都必须是
   可选的（import 失败时该后端报 `BackendUnavailable`，节点照常工作），并登记在
   `docs/dependencies.md`。**绝不声明或锁定 torch。**
-- **FA4 的 vendoring**：`veda_comfy/_vendor/{fa4_upstream,fa4_sm8x}` 由
-  `tools/vendor_fa4.py` 从锁定 sha256 的 PyPI wheel 生成：打 `tools/fa4_patches/sm8x` 的补丁
-  （结果逐文件校验 sha256）、把 `flash_attn.cute` 改成相对 import（私有包，不影响其他节点）、
-  应用 `COMPAT_EDITS`（例如 Windows 的 `fcntl`）。改补丁或升级 FA4 = 修改 tool 里的锁定值后
-  重新生成，单独提交，并在所有受影响架构上跑 `tests/gpu`。CI 用 `--check` 保证提交的副本就是
-  生成结果。
+- **FA4 是 fork，不是依赖**：`veda_comfy/kernels/fa4`（+ 它需要的 `quack/`）从
+  flash-attn-4 4.0.0b32 与 quack-kernels 0.6.5 fork 而来，只保留入口闭包用得到的模块，
+  import 改成相对的（私有包，不影响其他节点使用 FlashAttention）。**直接编辑它**，像仓库里
+  其他代码一样提交。
+  - 它保留上游的代码风格（ruff 不检查这两个目录），这样 `UPSTREAM.diff` 可读、将来合并上游
+    可行。
+  - `tools/fa4_upstream_diff.py --write` 刷新 `veda_comfy/kernels/UPSTREAM.diff`，这是
+    BSD-3 / Apache-2.0 声明指向的改动记录；**每次改 fork 都要刷新并同提交**，CI 会校验。
+  - 升级上游 = 改 tool 里锁定的 wheel 与 sha256、把 fork 对上新基线、重新生成 diff，单独提交，
+    并在所有能摸到的架构上跑 `tests/gpu`。
 - 移植的小段外部代码要在旁边注明来源与许可证（需与 MIT 兼容）；第三方声明写进 `NOTICE.md`。
 - 模型权重不进仓库；打分器在运行时下载（`downloads.KNOWN_PREDICTORS` 锁定 repo、revision、
   sha256、大小）。发布新的打分器 = 在那里加一项，并更新示例工作流。
@@ -203,6 +209,6 @@ ruff check .
 pytest tests/gpu -q                                 # GPU 机器上
 python install_fa4.py --check                       # 本机各后端自检
 python tools/bench_attention.py --latent-t 37       # 单层注意力测速
-python tools/vendor_fa4.py --check                  # 校验 _vendor
+python tools/fa4_upstream_diff.py --write           # 改完 fork 后刷新 provenance
 python tools/make_example_workflows.py              # 重新生成示例工作流
 ```

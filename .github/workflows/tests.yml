@@ -46,13 +46,13 @@ jobs:
         working-directory: ComfyUI/custom_nodes/Veda-on-ComfyUI
         run: python -m pytest tests/unit -q
 
-  vendor:
-    # The vendored FA4 copies must be exactly what tools/vendor_fa4.py
-    # generates from the pinned wheel and patch series.
+  upstream-diff:
+    # The FA4 fork's provenance record must match the fork, which also
+    # catches a kernel edit that was never committed.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python tools/vendor_fa4.py --check
+      - run: python tools/fa4_upstream_diff.py

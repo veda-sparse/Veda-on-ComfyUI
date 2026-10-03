@@ -34,7 +34,9 @@ testpaths = ["tests/unit"]
 
 [tool.ruff]
 line-length = 80
-extend-exclude = ["veda_comfy/_vendor"]
+# The FA4 fork keeps upstream's formatting so that UPSTREAM.diff stays
+# readable and merges stay possible; it has its own conventions.
+extend-exclude = ["veda_comfy/kernels/fa4", "veda_comfy/kernels/quack"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

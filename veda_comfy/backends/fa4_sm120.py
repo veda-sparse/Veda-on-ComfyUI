@@ -8,9 +8,9 @@ FA4 sizes every arch-12 part for 99 KB of shared memory per block (its
 
 Upstream FA4 rejects block sparsity on arch 12. Its SM120 kernels are thin
 subclasses of the SM80 ones (only the SMEM bound differs), so the vendored
-copy `veda_comfy/_vendor/fa4_sm8x` (FA4 4.0.0b32 + Miowtion's patch series,
+copy `veda_comfy/kernels/fa4` (FA4 4.0.0b32 + Miowtion's patch series,
 whose last two patches lift the arch-12 gates) gives SM120 the patched SM80
-block-sparse main loops. Private copy: no global `flash_attn` import.
+block-sparse main loops. A private package: no global `flash_attn` import.
 
 Self-contained on purpose (see backends/base.py): shares nothing with the
 other FA4 backends except the vendored package, which is generated, never
@@ -37,9 +37,9 @@ _CALL_LOCK = threading.Lock()
 def _modules():
     import cutlass  # pylint: disable=import-outside-toplevel
     import cutlass.cute as cute  # pylint: disable=import-outside-toplevel
-    from .._vendor.fa4_sm8x import block_sparsity  # pylint: disable=import-outside-toplevel
-    from .._vendor.fa4_sm8x import interface  # pylint: disable=import-outside-toplevel
-    from .._vendor.fa4_sm8x import utils  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import block_sparsity  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import interface  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import utils  # pylint: disable=import-outside-toplevel
     return cutlass, cute, block_sparsity, interface, utils
 
 

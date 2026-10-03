@@ -19,6 +19,28 @@ pytestmark = pytest.mark.skipif(COMFYUI_ROOT is None,
 LAYERS, HEADS, HIDDEN = 2, 2, 256
 
 
+@pytest.fixture(autouse=True)
+def on_reference_backend(monkeypatch):
+    """Resolves every device to the exact reference backend.
+
+    Every shipped backend needs a GPU, so on CPU CI `backends.resolve`
+    finds nothing and the patch goes dense - which would leave the whole
+    override path untested. `reference_backend` stands in: it is exact, so
+    a failure here is about the code under test and never about precision.
+    """
+    import reference_backend
+    from veda_comfy import backends
+    from veda_comfy import hardware
+
+    def resolve(device, notify=None):
+        del notify  # nothing slow to announce
+        return backends.Resolution(hardware.describe(device),
+                                   reference_backend.ReferenceBackend(),
+                                   [('reference', 'ok')])
+
+    monkeypatch.setattr(backends, 'resolve', resolve)
+
+
 @pytest.fixture(scope='module')
 def h3():
     import comfy.ops
@@ -96,7 +118,7 @@ def _patch(bundle, generated, reference, **kwargs):
     from veda_comfy.core import selection
     s = settings.VedaSettings(generated=selection.Budget(**generated),
                               reference=selection.Budget(**reference),
-                              backend='torch', **kwargs)
+                              **kwargs)
     return comfy_patch.VedaPatch(bundle, s, node_id=None)
 
 
@@ -178,9 +200,9 @@ def test_node_text_reports_sparsity_not_call_counts(h3, bundle, verbose):
     _forward(h3, 't2va', patch)
     patch.on_cleanup()
     running, summary = shown[0], shown[-1]
-    assert running.startswith('⚡ Veda running · PyTorch SDPA')
+    assert running.startswith('⚡ Veda running · reference (fp32)')
     assert 'Video: 448x256' in running and 'Sparsity: generated 90%' in running
-    assert summary.startswith('✅ Veda done · PyTorch SDPA')
+    assert summary.startswith('✅ Veda done · reference (fp32)')
     assert '% of full attention' in summary
     assert ('Attention calls' in summary) == verbose
     assert 'sparse /' not in summary

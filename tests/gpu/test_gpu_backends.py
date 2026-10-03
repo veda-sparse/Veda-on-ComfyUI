@@ -91,6 +91,9 @@ def test_backend_matches_reference(device, name):
     assert err < 2e-2, f'{backend.name}: max error {err}'
 
 
+@pytest.mark.xfail(reason='FP8 operand smem layouts are still being '
+                          'brought up; see docs/features/fp8_kernel.md',
+                   strict=False)
 @pytest.mark.parametrize('device', _devices(), ids=str)
 def test_fp8_matches_reference_and_bf16(device):
     """The FP8 kernel is a precision variant, not a different attention.

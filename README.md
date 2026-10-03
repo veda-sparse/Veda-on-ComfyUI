@@ -1,60 +1,79 @@
 <div align="center">
 
-<img src="assets/icon.svg" width="120" alt="Veda logo">
+<img src="https://raw.githubusercontent.com/veda-sparse/Veda-on-ComfyUI/main/assets/icon.svg" width="120" alt="Veda logo">
 
 # Veda Sparse Attention for ComfyUI (MiniMax-H3)
 
-**Faster MiniMax-H3 video + audio generation in ComfyUI, with your usual
-workflow, LoRAs and checkpoints.** [中文说明](README.zh-CN.md)
-
 </div>
 
-[Veda](https://arxiv.org/abs/2605.30325) (ICML 2026) trains a small
-predictor that finds the ~10% of attention that matters and skips the rest.
-This custom node plugs it into ComfyUI's native MiniMax-H3 (T2VA, FL2VA and
-R2VA) as one node: **MODEL in, MODEL out**.
+[Paper](https://arxiv.org/abs/2605.30325) · [Project Page](https://veda-sparse.github.io/) · [Predictor](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview) · [Training Code](https://github.com/veda-sparse/Miowtion) · [中文说明](README.zh-CN.md)
 
-* **Faster where it hurts:** long clips spend most of their time in
-  attention; Veda reports 2-3x end to end on 10-14 s clips (more on longer,
-  less on short ones).
-* **Nothing else changes:** weights are untouched, so Turbo / style LoRAs,
-  fine-tuned or quantized H3 checkpoints, first/last-frame and reference
-  conditioning, and other attention or block patches keep working.
-* **Safe by default:** every kernel passes a self-test on your GPU before
-  it is used; anything Veda cannot handle runs normal attention and says so
-  on the node, never a broken render.
+## Introduction
 
-## Quick start
+**Veda** is a learned sparse-attention method for video diffusion models.
+Attention dominates the cost of a long clip, and a small distilled
+predictor can say in advance which tiles of the attention map carry the
+result. Veda computes roughly the top 10% of them and skips the rest.
 
-1. **Install** with ComfyUI Manager (search "Veda") or
-   `comfy node install veda-sparse-attention`, or clone this repo into
-   `ComfyUI/custom_nodes/`. Restart ComfyUI. Needs ComfyUI >= 0.38.0.
-2. **Open a template:** *Workflow -> Browse Templates -> Veda-on-ComfyUI*:
-   "Veda MiniMax H3 T2VA" or "Veda MiniMax H3 R2VA". Missing models can be
-   downloaded from the dialog that pops up.
-3. **Write your prompt and run.** The first run downloads the predictor
-   (~275 MB, into `models/veda`) and compiles the kernels once.
+This repository packages Veda as a custom node for ComfyUI's native
+MiniMax-H3 (T2VA, FL2VA and R2VA): one node, MODEL in and MODEL out.
 
-To add Veda to your own H3 workflow: put **Veda Sparse Attention (MiniMax
-H3)** after the model loader and LoRA loaders, right before the guider /
-sampler. To compare, select it and press **Ctrl+B** (bypass): same seed,
-full attention.
+### Highlights
 
-### Kernels
+- **Faster inference.** 2.9x end to end and 7.1x on attention alone
+  against ComfyUI's default attention, measured on an RTX 5070. The gain
+  grows with clip length.
+- **Plug-and-play.** An attention override rather than a weight patch, so
+  Turbo and style LoRAs, fine-tuned and quantized H3 checkpoints,
+  first/last-frame and reference conditioning, and other block patches
+  keep working.
+- **Safe by default.** Every kernel passes a self-test on the GPU before
+  it is used. Anything Veda cannot handle runs the model's own attention
+  and says so on the node, rather than producing a broken render.
+- **Nothing extra to install.** The sparse kernel ships with the node;
+  installing from the Comfy Registry pulls in Triton (NVIDIA, SM80 and
+  newer) or MLX (Apple silicon).
 
-Nothing to install. The sparse kernel ships with the node: installing from
-the Comfy Registry pulls in Triton (NVIDIA, SM80 and newer) or MLX (Apple
-silicon) automatically.
+## Installation
 
-It is the same INT8 arithmetic ComfyUI itself uses for low-precision
-attention (`--use-sage-attention`), so the quality is what you would get
-there, with Veda's sparsity on top. On an RTX 5070 at 104k tokens and 90%
-sparsity, one attention layer takes 528 ms against 11.8 s for full
-attention.
+Requires ComfyUI >= 0.38.0. In ComfyUI Manager, search "Veda". Or:
 
-## What the node shows
+```bash
+comfy node install veda-sparse-attention
+```
 
-The text on the node tells you what is happening, e.g.
+Or clone this repository into `ComfyUI/custom_nodes/` and restart ComfyUI.
+
+## Usage
+
+Open *Workflow -> Browse Templates -> Veda-on-ComfyUI* and pick "Veda
+MiniMax H3 T2VA" or "Veda MiniMax H3 R2VA". The missing-model dialog
+offers the predictor. Write a prompt and run.
+
+To add Veda to an existing H3 workflow, put **Veda Sparse Attention
+(MiniMax H3)** on the MODEL wire after the model and any LoRA loaders,
+last before the guider or sampler. Select it and press **Ctrl+B** to
+bypass it and render the same seed with full attention.
+
+Do not combine it with ComfyUI's own "Model Sparse Attention" node on H3:
+that one replaces the attention blocks outright, so Veda would never be
+called. The node says so when it sees both.
+
+### Predictor
+
+On first use the node downloads the predictor into `models/veda`
+(275 MB, resumable and sha256-verified) and compiles the kernels once.
+
+To place it by hand, download
+`minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors` from the
+[predictor repository](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
+into `ComfyUI/models/veda/` and refresh ComfyUI. Any `.safetensors` in
+that folder appears in the `predictor` list, so a predictor trained
+elsewhere is selected the same way. Behind a firewall, set `HF_ENDPOINT`
+(for example `https://hf-mirror.com`) before starting ComfyUI; `HF_TOKEN`
+is honoured for gated repositories.
+
+### Node text
 
 ```
 Veda done · Triton INT8 (SM120)
@@ -62,64 +81,83 @@ Video: 1344x768 · 5.2 s
 Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
-Before sampling it shows the kernel it will use and the sparsity; while
-sampling, the video size and which trained tile plan it matched. A line
-starting `Veda off` means there is no kernel on this GPU or the layout could
-not be read, with the reason; the tile plan line reads `nearest trained
-size: ...` when the video is outside what the predictor was trained on. Turn
-on `verbose` for timing per phase, attention calls and predictor details.
+Before sampling the node names the kernel it will use and the sparsity;
+while sampling, the video size and the trained tile plan it matched; at
+the end, how much of full attention was actually computed. A line
+starting `Veda off` gives the reason Veda is not running, and `nearest
+trained size: ...` on the tile plan line means the video is outside the
+trained set. `verbose` adds per-phase timing, call counts and predictor
+details.
 
-## Settings
+### Options
 
-Only `model` and `predictor` are visible; everything else is an advanced
-input (click "show advanced inputs") with the trained defaults:
+Only `model` and `predictor` are visible. The rest are advanced inputs
+(click "show advanced inputs") and default to the trained values.
 
-| Input | Default | Meaning |
+| Input | Default | Description |
 |---|---|---|
-| `generated_sparsity` | `90%` | Sparsity of the generated video's attention: `90%` skips 90% of the key tiles (the trained value). A whole number such as `24` keeps exactly that many 128-token key tiles instead. |
-| `reference_sparsity` | `90%` | The same for references: first/last frames, guide frames, reference images and videos. `0%` = references use full attention. |
+| `generated_sparsity` | `90%` | Sparsity of the generated video's attention. `90%` skips 90% of the key tiles each query tile could attend, which is the trained value; lower is closer to full attention and slower. A whole number such as `24` keeps exactly that many 128-token key tiles instead. |
+| `reference_sparsity` | `90%` | The same for references: first/last frames, guide frames, reference images and videos. `0%` gives them full attention. |
 | `full_attention_layers` | empty | 0-based DiT blocks that keep full attention, e.g. `0, 1, 47-49`. |
 | `full_attention_steps` | empty | 0-based sampling steps that keep full attention, e.g. `0`. |
-| `verbose` | off | After each run, also show attention time per phase, call counts and predictor details on the node. |
+| `verbose` | off | Also report attention time per phase, call counts and predictor details on the node after each run. |
 
-The released predictor was trained for **1344x768, 768x1344, 768x768 and
-1024x768 at 5 / 10 / 14 s** with the 8-step Turbo LoRA. Other sizes use the
-tile plan of the nearest aspect ratio and duration; other sizes, step
-counts and R2VA / FL2VA references work but are outside its training data,
-so check the result against full attention (bypass).
+The released predictor was trained for 1344x768, 768x1344, 768x768 and
+1024x768 at 5 / 10 / 14 s with the 8-step Turbo LoRA. Other sizes fall
+back to the tile plan of the nearest aspect ratio and duration. Other
+sizes, other step counts and R2VA / FL2VA references all work, but are
+outside the training data, so compare them against full attention.
+
+## Performance
+
+T2VA at 1344x768, 124 frames (5.2 s), 8-step Turbo LoRA, 90% sparsity,
+on an RTX 5070 12 GB under Windows 11.
+
+| Attention | Per step | 8 steps | Attention per step |
+|---|---|---|---|
+| ComfyUI default | 40.7 s | 342 s | 31.1 s |
+| ComfyUI `--use-sage-attention` | 24.8 s | 231 s | 15.2 s |
+| Veda sparse INT8 | **14.0 s** | **130 s** | **4.41 s** |
+
+One attention layer at 104k tokens and 90% sparsity takes 528 ms against
+11.8 s for full attention. Veda's INT8 arithmetic is the same code
+ComfyUI runs behind `--use-sage-attention`, so the quality is what that
+path gives, with sparsity on top. What remains per step is MLP and weight
+movement, not attention.
 
 ## Hardware
-
-| Hardware | Status |
-|---|---|
-| RTX 30 / A100 / RTX 40 / L40 (sm80-89) | see [docs/hardware.md](docs/hardware.md) |
-| H100 / H200 (sm90) | see [docs/hardware.md](docs/hardware.md) |
-| B200 / B300 (sm100 / sm103) | see [docs/hardware.md](docs/hardware.md) |
-| RTX 50, RTX PRO 6000 Blackwell (sm120) | **tested: RTX 5070, Windows 11** (2.5x per sampling step, 5 s 16:9 T2VA) |
-| DGX Spark / GB10 (sm121) | see [docs/hardware.md](docs/hardware.md) |
-| Apple silicon (M series) | tested (M3 Pro) |
 
 One Triton kernel covers every NVIDIA GPU from SM80 on, Windows and Linux
 alike. Older cards, ROCm and CPU have no kernel: the node says so and the
 model runs its own attention.
 
-## FAQ
+| Hardware | Status |
+|---|---|
+| RTX 30 / A100 / RTX 40 / L40 (sm80-89) | code path ready, not yet verified on this hardware |
+| H100 / H200 (sm90) | code path ready, not yet verified on this hardware |
+| B200 / B300 (sm100 / sm103) | code path ready, not yet verified on this hardware |
+| RTX 50, RTX PRO 6000 Blackwell (sm120) | **verified: RTX 5070, Windows 11** |
+| DGX Spark / GB10 (sm121) | code path ready, not yet verified on this hardware |
+| Apple silicon (M series) | verified: M3 Pro, macOS 15 |
 
-* **Does it change my LoRA's style?** No. Veda only decides which attention
-  blocks to compute; the model weights (and your LoRAs) are untouched.
-* **Can I use it with other attention nodes?** Calls Veda declines go to
-  whatever attention override was set before it. Do not combine it with
-  ComfyUI's own "Model Sparse Attention" node on H3 (the node warns).
-* **Behind a firewall / in mainland China?** Set `HF_ENDPOINT` (for example
-  `https://hf-mirror.com`) before starting ComfyUI, or download the
-  predictor by hand into `models/veda`.
-* **Batch size?** MiniMax-H3 itself runs batch size 1.
+Per-architecture notes and the full measurement log are in
+[docs/hardware.md](https://github.com/veda-sparse/Veda-on-ComfyUI/blob/main/docs/hardware.md).
 
-## Links and license
+## License
 
-* Paper: [Veda: Scalable Video Diffusion via Distilled Sparse Attention](https://arxiv.org/abs/2605.30325) · project page: <https://veda-sparse.github.io/>
-* Predictor: [Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview) (MiniMax H3 Community License)
-* Training code: [veda-sparse/Miowtion](https://github.com/veda-sparse/Miowtion)
+Code: MIT. The INT8 kernel's arithmetic is derived from SageAttention v1
+(BSD-3-Clause). The predictor inherits the MiniMax H3 Community License
+from its base model. See
+[NOTICE.md](https://github.com/veda-sparse/Veda-on-ComfyUI/blob/main/NOTICE.md).
 
-Code: MIT. The INT8 kernel's arithmetic comes from SageAttention v1:
-BSD-3-Clause. See [NOTICE.md](NOTICE.md).
+## Citation
+
+```bibtex
+@inproceedings{han2026veda,
+  title={Veda: Scalable Video Diffusion via Distilled Sparse Attention},
+  author={Han, Shihao and Yang, Hao and Hu, Xinting and Mei, Xiaofeng
+          and Jiang, Yi and Qi, Xiaojuan},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2026}
+}
+```

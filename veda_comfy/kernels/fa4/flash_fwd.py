@@ -18,6 +18,15 @@ import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 from cutlass import Float32, Int32, const_expr
+
+# Online-softmax probabilities are at most 1 and, spread over thousands of
+# keys, mostly land below e4m3's smallest normal (2**-6): quantising them
+# as they stand flushes almost all of them to zero and leaves a near
+# one-hot attention. SageAttention v1 sidesteps this by keeping P in fp16;
+# with an FP8 PV gemm the probabilities are scaled into range instead, as
+# SageAttention2++ and FA3 do, and the caller divides the output by the
+# same constant. A power of two keeps the multiply exact.
+FP8_P_SCALE = 256.0
 from cutlass.cute.nvgpu import cpasync, warp
 import cutlass.utils as utils_basic
 from cutlass.base_dsl.arch import Arch
@@ -100,6 +109,7 @@ class FlashAttentionForwardBase:
         # ldmatrix transposes 1-byte elements on the way in. V therefore
         # arrives already transposed, as (head_dim_v, seqlen_k).
         self.v_transposed = dtype.width == 8
+        self.p_scale = FP8_P_SCALE if dtype.width == 8 else 1.0
         # padding head_dim to a multiple of 16 as k_block_size
         hdim_multiple_of = 16
         self.tile_hdim = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
@@ -1395,7 +1405,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         row_scale = softmax.online_softmax(acc_S, is_first=is_first_n_block, check_inf=check_inf)
         softmax.rescale_O(mma_params.acc_O, row_scale)
         rP = cute.make_fragment_like(acc_S, self.dtype)
-        rP.store(acc_S.load().to(self.dtype))
+        if const_expr(self.p_scale != 1.0):
+            rP.store((acc_S.load() * Float32(self.p_scale)).to(self.dtype))
+        else:
+            rP.store(acc_S.load().to(self.dtype))
         tOrP = layout_utils.reshape_acc_to_frgA(rP)
         if const_expr(self.num_stages > 1):
             sync()

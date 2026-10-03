@@ -35,9 +35,10 @@ def _modules():
     import cutlass  # pylint: disable=import-outside-toplevel
     import cutlass.cute as cute  # pylint: disable=import-outside-toplevel
     from ..kernels.fa4 import block_sparsity  # pylint: disable=import-outside-toplevel
+    from ..kernels.fa4 import flash_fwd  # pylint: disable=import-outside-toplevel
     from ..kernels.fa4 import interface  # pylint: disable=import-outside-toplevel
     from ..kernels.fa4 import utils  # pylint: disable=import-outside-toplevel
-    return cutlass, cute, block_sparsity, interface, utils
+    return cutlass, cute, block_sparsity, interface, utils, flash_fwd
 
 
 @functools.cache
@@ -47,7 +48,7 @@ def _valid_key_mask_mod():
     A module-level singleton because FA4 keys its compile cache on the
     callable; a fresh closure per call would recompile every call.
     """
-    cutlass, cute, _, _, utils = _modules()
+    cutlass, cute, _, _, utils, _ = _modules()
 
     @cute.jit
     def valid_key(batch, head, m_idx, n_idx, seqlen_info, aux_tensors):
@@ -85,7 +86,7 @@ class Fa4Sm80Backend(base.Backend):
         self.fp8 = fp8
 
     def attend(self, q, k, v, block_mask, layout):
-        _, _, block_sparsity, interface, _ = _modules()
+        _, _, block_sparsity, interface, _, flash_fwd = _modules()
         tensors = block_sparsity.DenseBlockMaskTorch(
             block_mask=(block_mask & layout.kv_ok)[None],
             partial_kv_blocks=~layout.full_tile,
@@ -115,7 +116,10 @@ class Fa4Sm80Backend(base.Backend):
         if isinstance(out, tuple):
             out = out[0]
         out = out[0]
-        return out if v_scale is None else out.mul_(v_scale)
+        if v_scale is None:
+            return out
+        # Undo both the V quantisation and the P scale the kernel applied.
+        return out.mul_(v_scale / flash_fwd.FP8_P_SCALE)
 
     def warmup_note(self) -> str:
         return 'compiling kernels for this GPU (first run only, ~10 s)'

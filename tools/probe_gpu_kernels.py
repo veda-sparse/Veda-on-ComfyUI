@@ -16,6 +16,30 @@ import time
 
 import torch
 
+try:  # only on machines with the FA4 kernel runtime
+    import cutlass
+    import cutlass.cute as cute
+    from cutlass.cute.nvgpu import warp
+    from cutlass.torch import from_dlpack
+except ImportError:  # reported by cute_atoms()
+    cutlass = None
+
+
+def _compiles(build) -> str | None:
+    """None if `build` compiles for the resident GPU, else the reason.
+
+    The jit-traced function must find `cute` in module globals, so every
+    import above stays at module scope.
+    """
+    dummy = from_dlpack(torch.zeros(8, device='cuda'))
+    try:
+        cute.compile(cute.jit(build), dummy)
+        return None
+    except Exception as error:
+        first = str(error).splitlines()
+        detail = next((x for x in first if x.strip()), '')
+        return f'{type(error).__name__}: {detail[:90]}'
+
 
 def _bench(fn, repeat: int = 30) -> float:
     fn()
@@ -60,64 +84,53 @@ def throughput(size: int = 8192) -> None:
 
 def cute_atoms() -> None:
     """Which warp-level atoms the installed CuTe DSL exposes and compiles."""
-    try:
-        import cutlass
-        import cutlass.cute as cute
-        from cutlass.cute.nvgpu import warp
-        from cutlass.torch import from_dlpack
-    except ImportError as error:
-        print(f'\n== CuTe DSL ==\nnot installed ({error})')
+    if cutlass is None:
+        print('\n== CuTe DSL ==\nnot installed')
         return
     print(f'\n== CuTe DSL {cutlass.__version__} ==')
     print('warp atoms:', ', '.join(sorted(
         n for n in dir(warp) if n.endswith('Op'))))
 
-    # Each case builds a tiled MMA inside a jit function: the only honest
-    # test is whether it compiles for the resident GPU.
-    cases = [
+    print('\nMMA atoms (what the QK / PV gemms can use):')
+    mma_cases = [
         ('MmaF16BF16Op bf16 16x8x16',
          lambda: warp.MmaF16BF16Op(cutlass.BFloat16, cutlass.Float32,
                                    (16, 8, 16))),
         ('MmaFP8Op e4m3 16x8x32',
          lambda: warp.MmaFP8Op(cutlass.Float8E4M3FN, cutlass.Float32,
                                (16, 8, 32))),
+        ('MmaFP8Op e4m3 16x8x16',
+         lambda: warp.MmaFP8Op(cutlass.Float8E4M3FN, cutlass.Float32,
+                               (16, 8, 16))),
         ('MmaFP8Op e5m2 16x8x32',
          lambda: warp.MmaFP8Op(cutlass.Float8E5M2, cutlass.Float32,
                                (16, 8, 32))),
     ]
-    for name, make_op in cases:
-        @cute.jit
-        def build(dummy: cute.Tensor, make_op=make_op):
+    for name, make_op in mma_cases:
+        def build(dummy, make_op=make_op):
             cute.make_tiled_mma(cute.make_mma_atom(make_op()))
 
-        dummy = from_dlpack(torch.zeros(8, device='cuda'))
-        try:
-            cute.compile(build, dummy)
-            print(f'  compiles: {name}')
-        except Exception as error:
-            print(f'  FAILS:    {name}: {type(error).__name__}: '
-                  f'{str(error).splitlines()[0][:90]}')
+        reason = _compiles(build)
+        print(f'  {"ok   " if reason is None else "FAILS"} {name}'
+              + ('' if reason is None else f': {reason}'))
 
-    # ldmatrix: FP8 operands need a non-transposing load, because the
-    # transposing ldmatrix is 16-bit only on pre-SM100 parts. Veda's PV
-    # gemm therefore needs V transposed before the kernel sees it.
-    ld_ops = sorted(n for n in dir(warp) if 'LdMatrix' in n)
-    print('ldmatrix atoms:', ', '.join(ld_ops) or 'none')
-    for name in ld_ops:
+    # The PV gemm needs V with the contraction dim contiguous. For 16-bit
+    # operands the kernel gets that from a transposing ldmatrix; whether a
+    # 1-byte transposing load exists here decides if Veda must transpose V
+    # before the kernel sees it.
+    print('\nldmatrix atoms on 1-byte operands (V for the PV gemm):')
+    for name in sorted(n for n in dir(warp)
+                       if n.startswith('LdMatrix') and n.endswith('Op')):
         op = getattr(warp, name)
         for transpose in (False, True):
-            @cute.jit
-            def build(dummy: cute.Tensor, op=op, transpose=transpose):
+            def build(dummy, op=op, transpose=transpose):
                 cute.make_copy_atom(op(transpose=transpose, num_matrices=4),
                                     cutlass.Float8E4M3FN)
 
-            dummy = from_dlpack(torch.zeros(8, device='cuda'))
-            try:
-                cute.compile(build, dummy)
-                print(f'  compiles: {name}(transpose={transpose}) on fp8')
-            except Exception as error:
-                print(f'  FAILS:    {name}(transpose={transpose}) on fp8: '
-                      f'{str(error).splitlines()[0][:70]}')
+            reason = _compiles(build)
+            print(f'  {"ok   " if reason is None else "FAILS"} '
+                  f'{name}(transpose={transpose})'
+                  + ('' if reason is None else f': {reason}'))
 
 
 def main() -> None:

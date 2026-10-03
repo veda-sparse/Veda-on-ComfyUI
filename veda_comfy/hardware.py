@@ -127,17 +127,14 @@ def _describe(device_str: str) -> DeviceInfo:
                           os_name, machine, props.total_memory, unified,
                           torch.version.cuda)
     if device.type == 'mps':
+        # `sysctl -n machdep.cpu.brand_string` gives a prettier string
+        # ("Apple M3 Pro" vs "arm"), but spawning a process for a display
+        # label is not worth being a custom node that calls subprocess:
+        # the Comfy Registry standards single those calls out, and a
+        # reviewer should not have to read our code to clear us.
         name = 'Apple silicon'
         if os_name == 'darwin':
             name = platform.processor() or name
-            try:
-                import subprocess  # pylint: disable=import-outside-toplevel
-                name = subprocess.run(
-                    ['sysctl', '-n', 'machdep.cpu.brand_string'],
-                    capture_output=True, text=True, timeout=2,
-                    check=False).stdout.strip() or name
-            except OSError:
-                pass
         return DeviceInfo('mps', None, name, None, 'mps', 'apple-silicon',
                           os_name, machine, None, True, None)
     return DeviceInfo(device.type, device.index, device.type.upper(), None,

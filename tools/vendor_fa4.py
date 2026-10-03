@@ -95,7 +95,7 @@ PATCHED_SHA256 = {
     'flash_bwd.py':
         '0d7fffb59e3013d0e24172f7c897f9a0fec71549c62ed1b1b29e19358b33038c',
     'flash_fwd.py':
-        'fef42bc617e167f4b8c160e5560a8900129f9591179f0989b2ac7f7fac1f43f5',
+        '4020f94caa8c40a2cc10e3dac3dd91192191f483e433ecef2f9472a7c93ea50d',
     'flash_fwd_sm120.py':
         'a3f0b2dcbe727b256555be25c04aada7e87a0ecf996bd6e4e8e949bfb5939719',
     'interface.py':

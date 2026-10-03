@@ -49,33 +49,6 @@ from .tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, Tile
 from .utils import AuxData
 
 
-def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
-    """Accumulator of the QK gemm viewed as the A operand of an FP8 PV gemm.
-
-    quack's reshape_acc_to_frgA pairs two N tiles, which is the 8-value A
-    fragment of the 16-bit m16n8k16 atom. FP8 runs m16n8k32, whose A
-    fragment is 16 values, so four N tiles are gathered instead of two.
-    can_implement already requires tile_n to be a multiple of 32, which is
-    what makes MMA_N divisible by 4.
-    """
-    acc_layout = acc.layout
-    assert acc_layout.shape[2] % 4 == 0
-    l = cute.logical_divide(acc_layout, (None, None, 4))
-    view = cute.make_layout(
-        (
-            (l.shape[0][0], l.shape[0][1], l.shape[2][0]),
-            l.shape[1],
-            l.shape[2][1],
-        ),
-        stride=(
-            (l.stride[0][0], l.stride[0][1], l.stride[2][0]),
-            l.stride[1],
-            l.stride[2][1],
-        ),
-    )
-    return cute.make_tensor(acc.iterator, view)
-
-
 class FlashAttentionForwardBase:
 
     def __init__(
@@ -687,21 +660,28 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
     def _get_tiled_mma(self):
         # FP8 operands use mma.sync.m16n8k32 (SM89 and SM120 have the FP8
         # tensor cores; the SM80 kernel body is otherwise dtype-generic).
+        # QK reads both operands from smem, so it takes the widest FP8
+        # step. PV takes its A operand straight from the QK accumulator,
+        # and only the 16-wide step distributes k over the threads the way
+        # the accumulator distributes its columns; the 32-wide one would
+        # need V permuted to compensate.
         if self.dtype.width == 8:
-            make_op = lambda: warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
-            tile_k = 32
+            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
+            op_pv = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
+            tile_k_qk, tile_k_pv = 32, 16
         else:
-            make_op = lambda: warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
-            tile_k = 16
+            op_qk = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
+            op_pv = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
+            tile_k_qk, tile_k_pv = 16, 16
         tiled_mma_qk = cute.make_tiled_mma(
-            make_op(),
+            op_qk,
             (self.num_threads // 32, 1, 1),
-            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k),
+            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k_qk),
         )
         tiled_mma_pv = cute.make_tiled_mma(
-            make_op(),
+            op_pv,
             (self.num_threads // 32, 1, 1),
-            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k),
+            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k_pv),
         )
         return tiled_mma_qk, tiled_mma_pv
 
@@ -1400,10 +1380,7 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         softmax.rescale_O(mma_params.acc_O, row_scale)
         rP = cute.make_fragment_like(acc_S, self.dtype)
         rP.store(acc_S.load().to(self.dtype))
-        if const_expr(self.dtype.width == 8):
-            tOrP = _reshape_acc_to_frgA_fp8(rP)
-        else:
-            tOrP = layout_utils.reshape_acc_to_frgA(rP)
+        tOrP = layout_utils.reshape_acc_to_frgA(rP)
         if const_expr(self.num_stages > 1):
             sync()
             load_K_next()

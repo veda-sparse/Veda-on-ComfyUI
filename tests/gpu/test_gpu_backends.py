@@ -1,11 +1,10 @@
-"""GPU checks: every backend that loads on this GPU must be correct, sparse,
-and agree with the others on a realistic problem.
+"""GPU checks: this GPU's backend must be correct, sparse, and match an
+fp32 reference to within its own declared precision.
 
     pytest tests/gpu -q            # on a CUDA or Apple silicon machine
 
-Skipped without an accelerator. FA4 tests need the kernels installed
-(install_fa4); they are reported as skipped otherwise, never silently
-passed.
+Skipped without an accelerator, and skipped (never silently passed) when
+the kernel's own dependency is missing.
 """
 
 import pytest
@@ -71,53 +70,59 @@ def _problem(device, seq_len=6000, heads=4, seed=0):
     return q, k, v, mask, layout
 
 
-@pytest.mark.parametrize('name', ['int8', 'fa4', 'flex', 'torch', 'mlx'])
 @pytest.mark.parametrize('device', _devices(), ids=str)
-def test_backend_matches_reference(device, name):
+def test_backend_matches_reference(device):
+    """The device's kernel against the fp32 reference on a real problem."""
     info = hardware.describe(device)
-    if name == 'fa4':
-        name = backends.candidates(info, 'fa4')[0]
-        if not name.startswith('fa4'):
-            pytest.skip(f'no FA4 backend for {info.label}')
-    if name not in backends.candidates(info, name)[:1]:
-        pytest.skip(f'{name} is not a candidate on {info.label}')
-    backend = _load(name, device)
+    names = backends.candidates(info)
+    if not names:
+        pytest.skip(f'no kernel for {info.label}')
+    backend = _load(names[0], device)
     base.self_test(backend, device)
     q, k, v, mask, layout = _problem(device)
     out = backend.attend(q, k, v, mask, layout)
     want = reference.block_sparse_attention(q, k, v, mask, layout)
     real = layout.slot_valid.bool()
-    err = (out[real].float() - want[real].float()).abs().max().item()
-    assert err < 2e-2, f'{backend.name}: max error {err}'
+    scale = max(1.0, want[real].float().abs().max().item())
+    err = (out[real].float() - want[real].float()).abs().max().item() / scale
+    print(f'{backend.name}: max err {err:.3%} '
+          f'(tolerance {backend.tolerance:.1%})')
+    assert err < backend.tolerance, f'{backend.name}: max error {err:.3%}'
 
 
 @pytest.mark.parametrize('device', _devices(), ids=str)
-def test_fp8_matches_reference_and_bf16(device):
-    """The FP8 kernel is a precision variant, not a different attention.
+def test_int8_matches_comfyui_s_own_quantisation(device):
+    """Our INT8 kernel against a torch model of SageAttention's arithmetic.
 
-    Checked against the fp32 reference and, more tellingly, against the
-    bf16 kernel on the same inputs: e4m3 keeps ~3 mantissa bits, so the
-    two must agree to within the quantization error, not to bf16's.
+    This is the accuracy contract: ComfyUI's low-precision attention is
+    SageAttention, so matching that model to within rounding means a user
+    who turns Veda on gets the quality ComfyUI would have given them.
+    `tools/compare_int8.py` runs the same comparison against the installed
+    package when there is one.
     """
-    info = hardware.describe(device)
-    names = backends.candidates(info, 'fa4-fp8')
-    if not names[0].endswith('-fp8'):
-        pytest.skip(f'no FP8 kernel for {info.label}')
-    fp8 = _load(names[0], device)
-    bf16 = _load(names[1], device)
+    if hardware.describe(device).kind != 'cuda':
+        pytest.skip('triton-int8 is CUDA only')
+    backend = _load('triton-int8', device)
     q, k, v, mask, layout = _problem(device)
     real = layout.slot_valid.bool()
-    want = reference.block_sparse_attention(q, k, v, mask, layout)[real].float()
-    got = fp8.attend(q, k, v, mask, layout)[real].float()
-    dense = bf16.attend(q, k, v, mask, layout)[real].float()
-    scale = want.abs().max().item()
-    err_fp8 = (got - want).abs().max().item() / scale
-    err_bf16 = (dense - want).abs().max().item() / scale
-    rel = (got - dense).norm().item() / dense.norm().item()
-    print(f'{fp8.name}: max err vs fp32 {err_fp8:.3%} '
-          f'(bf16 kernel {err_bf16:.3%}), relative L2 vs bf16 {rel:.3%}')
-    # e4m3 keeps three mantissa bits, so a few percent is the floor; an
-    # order more than that is a layout fault, not quantization.
-    assert rel < 0.05, f'FP8 disagrees with the bf16 kernel by {rel:.1%}'
-    assert err_fp8 < 0.10, f'FP8 output is off by {err_fp8:.1%}'
-    base.self_test(fp8, device)
+    tile = tiling.TILE_SIZE
+    scale = q.shape[-1] ** -0.5
+
+    def quantised(x, block):
+        blocks = x.float().view(x.shape[0] // block, block, *x.shape[1:])
+        step = (blocks.abs().amax(dim=(1, 3), keepdim=True) / 127.0).clamp(
+            min=torch.finfo(torch.float32).tiny)
+        return ((blocks / step).round().clamp(-127, 127) * step).view(x.shape)
+
+    allowed = mask.repeat_interleave(tile, 1).repeat_interleave(tile, 2)
+    allowed = allowed & layout.slot_valid.bool()[None, None, :]
+    scores = torch.einsum('qhd,khd->hqk', quantised(q, tile),
+                          quantised(k, 64)) * scale
+    probs = torch.softmax(scores.masked_fill(~allowed, float('-inf')),
+                          dim=-1).nan_to_num(0.0).half().float()
+    want = torch.einsum('hqk,khd->qhd', probs, v.half().float())[real]
+    got = backend.attend(q, k, v, mask, layout)[real].float()
+    rel = (got - want).norm().item() / want.norm().item()
+    print(f'against SageAttention\'s arithmetic: rel L2 {rel:.3%}')
+    assert rel < 0.01, f'INT8 kernel disagrees with its own arithmetic: {rel}'
+

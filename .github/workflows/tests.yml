@@ -45,14 +45,3 @@ jobs:
       - name: Unit tests
         working-directory: ComfyUI/custom_nodes/Veda-on-ComfyUI
         run: python -m pytest tests/unit -q
-
-  upstream-diff:
-    # The FA4 fork's provenance record must match the fork, which also
-    # catches a kernel edit that was never committed.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - run: python tools/fa4_upstream_diff.py

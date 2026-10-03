@@ -98,7 +98,6 @@ class VedaSettings:
             keeps_all means they stay in full attention (untiled).
         dense_layers: 0-based DiT blocks that run full attention.
         dense_steps: 0-based sampling steps that run full attention.
-        backend: One of backends.CHOICES.
         verbose: Show performance diagnostics and log every decision.
     """
 
@@ -106,7 +105,6 @@ class VedaSettings:
     reference: selection.Budget
     dense_layers: frozenset[int] = frozenset()
     dense_steps: frozenset[int] = frozenset()
-    backend: str = 'auto'
     verbose: bool = False
 
     def describe(self) -> str:

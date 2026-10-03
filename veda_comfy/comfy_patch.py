@@ -90,7 +90,7 @@ class VedaPatch:
         key = str(device)
         if key not in self._engines:
             resolution = backends.resolve(
-                device, self.settings.backend,
+                device,
                 notify=lambda text: self.status.show(f'⏳ Veda: {text}'))
             if resolution.backend is None:
                 self.status.warn(

@@ -1,21 +1,21 @@
-"""Backend registry: which kernels may run on which device, in what order.
+"""Backend registry: which kernel runs on which device.
 
-Candidates per device (first that loads and passes its self-test wins):
+    CUDA sm80 and up    triton-int8
+    Apple MPS           mlx
+    anything else       nothing (the node runs the model's own attention)
 
-    CUDA sm80 and up    triton-int8 -> fa4-<family> -> flex -> torch
-    ROCm                flex -> torch
-    Apple MPS           mlx -> torch
-    CPU                 torch
+One kernel per device family, no fallback chain and nothing for the user
+to pick. Earlier there were five: four FA4 CuTe backends (one per SM
+family, plus an FP8 variant) behind a FlexAttention and a plain-torch
+path. `triton-int8` replaced all of them because it is better on every
+axis that mattered - 1.50x the FA4 kernel's speed on the same sparse
+problem, the same accuracy as ComfyUI's own low-precision attention, and
+SM80-and-up coverage from a single Triton kernel - and because a chain of
+fallbacks silently hands a user a slower or less accurate kernel than the
+one they think they are running. See docs/features/int8_kernel.md.
 
-`triton-int8` is the default everywhere Triton runs: it is SageAttention's
-INT8 arithmetic, which is what ComfyUI itself uses for low-precision
-attention, and it is both faster and more accurate than the bf16 CuTe
-kernels. Those stay behind it as the fallback, per FA4 family:
-fa4-sm80 (SM80/86/87/89), fa4-sm90, fa4-sm100 (SM100/103/110),
-fa4-sm120 (SM120/121).
-
-Backend modules are imported lazily and only here, so a broken or missing
-kernel package costs one entry in the report, never the node.
+Backend modules are imported lazily and only here, so a missing Triton
+costs one line in the report, never the node.
 """
 
 from __future__ import annotations
@@ -31,32 +31,13 @@ import torch
 from . import base
 from .. import hardware
 
-# User-facing choices (the node's `backend` input). The FP8 variants of
-# the FA4 kernels are loadable by name for tools and tests but are not
-# offered: they are slower and ~4x less accurate than triton-int8 (see
-# docs/features/int8_kernel.md).
-CHOICES = ('auto', 'int8', 'fa4', 'flex', 'torch', 'mlx')
-
-_MODULES = {
-    'triton-int8': 'triton_int8',
-    'fa4-sm80': 'fa4_sm80', 'fa4-sm90': 'fa4_sm90',
-    'fa4-sm100': 'fa4_sm100', 'fa4-sm120': 'fa4_sm120',
-    'flex': 'flex', 'torch': 'torch_gather', 'mlx': 'mlx_gather',
-}
-_FA4_BY_MAJOR = {8: 'fa4-sm80', 9: 'fa4-sm90', 10: 'fa4-sm100',
-                 11: 'fa4-sm100', 12: 'fa4-sm120'}
-# Only the SM80-family kernel carries our FP8 patch.
-_FP8_SUFFIX = '-fp8'
-_FP8_CAPABLE = ('fa4-sm80', 'fa4-sm120')
+_MODULES = {'triton-int8': 'triton_int8', 'mlx': 'mlx_gather'}
+_MIN_CC = (8, 0)
 
 
 def _load(name: str, info: hardware.DeviceInfo) -> base.Backend:
-    """Instantiates one candidate by name (an '-fp8' suffix selects the
-    e4m3 variant of that kernel)."""
-    fp8 = name.endswith(_FP8_SUFFIX)
-    base_name = name[:-len(_FP8_SUFFIX)] if fp8 else name
-    module = importlib.import_module(f'.{_MODULES[base_name]}', __name__)
-    return module.create(info, fp8=fp8) if fp8 else module.create(info)
+    module = importlib.import_module(f'.{_MODULES[name]}', __name__)
+    return module.create(info)
 
 
 @dataclasses.dataclass
@@ -77,61 +58,36 @@ class Resolution:
         return '; '.join(f'{name}: {status}' for name, status in self.attempts)
 
 
-def candidates(info: hardware.DeviceInfo, requested: str = 'auto'
-               ) -> list[str]:
-    """Backend names to try on a device, best first."""
-    if info.kind == 'cuda' and info.family != 'rocm':
-        fa4 = _FA4_BY_MAJOR.get(info.cc[0]) if info.cc else None
-        int8 = 'triton-int8' if info.cc and info.cc >= (8, 0) else None
-        auto = [int8, fa4, 'flex', 'torch']
-    elif info.kind == 'cuda':
-        fa4, auto = None, ['flex', 'torch']
-    elif info.kind == 'mps':
-        fa4, auto = None, ['mlx', 'torch']
-    else:
-        fa4, auto = None, ['torch']
-    auto = [name for name in auto if name]
-    if requested in ('auto', '', None):
-        return auto
-    if requested == 'int8':
-        first = 'triton-int8'
-        if first not in auto:
-            return auto
-    elif requested in ('fa4', 'fa4-fp8'):
-        if fa4 is None:
-            return auto
-        first = fa4
-        if requested == 'fa4-fp8':
-            if fa4 not in _FP8_CAPABLE:
-                return auto
-            first = fa4 + _FP8_SUFFIX
-    else:
-        first = requested
-    return [first] + [name for name in auto if name != first]
+def candidates(info: hardware.DeviceInfo) -> list[str]:
+    """The backend to try on a device; empty if none applies."""
+    if info.kind == 'cuda' and info.family != 'rocm' and info.cc:
+        return ['triton-int8'] if info.cc >= _MIN_CC else []
+    if info.kind == 'mps':
+        return ['mlx']
+    return []
 
 
 _LOCK = threading.RLock()
-_RESOLVED: dict[tuple[str, str], Resolution] = {}
+_RESOLVED: dict[str, Resolution] = {}
 
 
-def resolve(device: torch.device, requested: str = 'auto',
+def resolve(device: torch.device,
             notify: Callable[[str], None] | None = None) -> Resolution:
-    """Loads and self-tests backends on `device` until one works (cached).
+    """Loads and self-tests the backend for `device` (cached).
 
     Args:
         device: The device attention runs on.
-        requested: One of CHOICES.
         notify: Called with a short status line before slow steps (kernel
             compilation on the first call).
     """
     info = hardware.describe(device)
-    key = (str(device), requested)
+    key = str(device)
     with _LOCK:
         if key in _RESOLVED:
             return _RESOLVED[key]
         attempts: list[tuple[str, str]] = []
         chosen = None
-        for name in candidates(info, requested):
+        for name in candidates(info):
             try:
                 backend = _load(name, info)
                 note = backend.warmup_note()
@@ -154,14 +110,13 @@ def resolve(device: torch.device, requested: str = 'auto',
         return resolution
 
 
-def probe(device: torch.device, requested: str = 'auto'
-          ) -> list[tuple[str, str, str | None]]:
-    """(name, display name, error or None) of each candidate on `device`,
+def probe(device: torch.device) -> list[tuple[str, str, str | None]]:
+    """(name, display name, error or None) for the device's backend,
     without compiling or self-testing (cheap; for the status shown before
     sampling)."""
     info = hardware.describe(device)
     out = []
-    for name in candidates(info, requested):
+    for name in candidates(info):
         try:
             backend = _load(name, info)
             out.append((backend.name, backend.display, None))

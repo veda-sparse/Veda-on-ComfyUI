@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from veda_comfy.backends import torch_gather
+from reference_backend import ReferenceBackend
 from veda_comfy.core import engine as veda_engine
 from veda_comfy.core import h3_layout
 from veda_comfy.core import predictor
@@ -63,7 +63,7 @@ def test_engine_keep_all_equals_dense(bundle, references):
     spec = _spec(references)
     keep_all = selection.Budget(tiles=10**6)
     engine = veda_engine.VedaEngine(bundle, keep_all, keep_all,
-                                    torch_gather.TorchGatherBackend(),
+                                    ReferenceBackend(),
                                     torch.device('cpu'))
     q, k, v = _qkv(spec.seq_len)
     plan = engine.plan_for(spec).plan
@@ -77,7 +77,7 @@ def test_engine_matches_reference_per_head_group(bundle, monkeypatch):
     spec = _spec(True)
     budget = selection.Budget(ratio=0.3)
     engine = veda_engine.VedaEngine(bundle, budget, budget,
-                                    torch_gather.TorchGatherBackend(),
+                                    ReferenceBackend(),
                                     torch.device('cpu'))
     monkeypatch.setattr(engine, '_chunk_bytes', lambda: 1)  # 1 head/chunk
     q, k, v = _qkv(spec.seq_len)

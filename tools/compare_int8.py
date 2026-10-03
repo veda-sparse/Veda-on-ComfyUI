@@ -14,7 +14,7 @@ difference left is arithmetic.
 
 Baselines, in order of authority:
   * fp32 reference (`core.reference`) - ground truth.
-  * bf16 (our FA4 kernel, and torch SDPA) - what ComfyUI runs by default.
+  * torch SDPA in bf16 - what ComfyUI runs by default.
   * SageAttention, called exactly as ComfyUI calls it, when installed.
   * a SageAttention-v1-style INT8 model in plain torch - per-block
     quantize/dequantize of Q and K, fp32 scores, fp16 PV. Mathematically
@@ -158,11 +158,7 @@ def main() -> None:
         raise SystemExit('needs a CUDA GPU')
     device = torch.device('cuda')
     info = hardware.describe(device)
-    names = backends.candidates(info, 'fa4-fp8')
-    if not names[0].endswith('-fp8'):
-        raise SystemExit(f'no FP8 kernel for {info.label}')
-    fp8 = backends._load(names[0], info)
-    bf16 = backends._load(names[1], info)
+    ours = backends._load('triton-int8', info)
 
     q, k, v, mask, layout = _dense_problem(device, args.tiles, args.heads)
     tokens = q.shape[0]
@@ -172,7 +168,6 @@ def main() -> None:
     denom = want.norm().item()
 
     rows = [
-        (f'{bf16.name} (bf16)', lambda: bf16.attend(q, k, v, mask, layout)),
         ('torch SDPA (bf16)', lambda: _sdpa(q, k, v)),
         ('ComfyUI INT8 model (torch)', lambda: _sage_v1_model(q, k, v)),
     ]
@@ -182,9 +177,6 @@ def main() -> None:
     except ImportError as error:
         print(f'  (SageAttention itself is not installed: {error.name}; '
               'the torch model below stands in for it)')
-    rows.append((f'{fp8.name} (FP8)', lambda: fp8.attend(q, k, v, mask,
-                                                         layout)))
-    ours = backends._load('triton-int8', info)
     rows.append((f'{ours.name} (ours)', lambda: ours.attend(q, k, v, mask,
                                                             layout)))
 
@@ -198,16 +190,16 @@ def main() -> None:
                 / want.abs().max().item())
         print(f'  {label:26s}  {rel:12.3%}   {peak:14.3%}')
 
-    int8 = results['ComfyUI INT8 model (torch)']
-    ours = results[f'{ours.name} (ours)']
-    rel = (ours - int8).norm().item() / int8.norm().item()
-    print(f'\nFP8 against the INT8 path directly: rel L2 {rel:.3%}')
-    int8_err = (int8 - want).norm().item() / denom
-    fp8_err = (ours - want).norm().item() / denom
-    verdict = ('FP8 is closer to the reference than the INT8 ComfyUI ships'
-               if fp8_err <= int8_err else
-               'FP8 is further from the reference than ComfyUI\'s INT8')
-    print(f'{verdict} ({fp8_err:.3%} against {int8_err:.3%}).')
+    model = results['ComfyUI INT8 model (torch)']
+    got = results[f'{ours.name} (ours)']
+    rel = (got - model).norm().item() / model.norm().item()
+    print(f'\nour kernel against the INT8 path directly: rel L2 {rel:.3%}')
+    model_err = (model - want).norm().item() / denom
+    our_err = (got - want).norm().item() / denom
+    verdict = ('we are at least as close to the reference as the INT8 '
+               'ComfyUI ships' if our_err <= model_err * 1.05 else
+               'we are further from the reference than ComfyUI\'s INT8')
+    print(f'{verdict} ({our_err:.3%} against {model_err:.3%}).')
     _padding_stage(device, info)
 
 

@@ -162,13 +162,6 @@ class VedaSparseAttention(io.ComfyNode):
                     tooltip='0-based sampling steps that keep full '
                             'attention, e.g. "0" for the first step. Empty '
                             '= all sparse.'),
-                io.Combo.Input(
-                    'backend', options=list(backends.CHOICES),
-                    default='auto', advanced=True,
-                    tooltip='Attention kernel. auto picks the fastest that '
-                            'passes a self-test on this GPU: FA4 -> '
-                            'FlexAttention -> torch (NVIDIA), MLX -> torch '
-                            '(Apple).'),
                 io.Boolean.Input(
                     'verbose', default=False, advanced=True,
                     tooltip='Also show timing and diagnostics on the node '
@@ -182,8 +175,7 @@ class VedaSparseAttention(io.ComfyNode):
     @classmethod
     def execute(cls, model, predictor, generated_sparsity='90%',
                 reference_sparsity='90%', full_attention_layers='',
-                full_attention_steps='', backend='auto',
-                verbose=False) -> io.NodeOutput:
+                full_attention_steps='', verbose=False) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
         node_id = getattr(hidden, 'unique_id', None)
         status = veda_status.NodeStatus(node_id)
@@ -201,7 +193,6 @@ class VedaSparseAttention(io.ComfyNode):
                 full_attention_layers, 'full_attention_layers'),
             dense_steps=veda_settings.parse_index_list(
                 full_attention_steps, 'full_attention_steps'),
-            backend=backend,
             verbose=verbose)
         missing = sorted(i for i in settings.dense_layers if i >= num_layers)
         if missing:
@@ -212,7 +203,7 @@ class VedaSparseAttention(io.ComfyNode):
         patched, _ = comfy_patch.apply(model, bundle, settings, node_id)
         device = comfy.model_management.get_torch_device()
         info = hardware.describe(device)
-        probe = backends.probe(device, backend)
+        probe = backends.probe(device)
         usable = [display for _, display, error in probe if error is None]
         lines = [f'Veda ready · {usable[0] if usable else "full attention"}'
                  f' · {info.short_name}',
@@ -220,10 +211,9 @@ class VedaSparseAttention(io.ComfyNode):
         full = settings.describe_full_attention()
         if full:
             lines.append(f'Full attention: {full}')
-        if info.kind == 'cuda' and any(
-                name.startswith('fa4') and error for name, _, error in probe):
-            lines.append('Tip: run install_fa4 in the Veda folder for the '
-                         'fastest kernels (FA4)')
+        if info.kind == 'cuda' and any(error for _, _, error in probe):
+            lines.append('Tip: pip install triton (triton-windows on '
+                         'Windows) for the sparse kernel')
         if verbose:
             lines.append(f'Predictor: {bundle.describe()}')
             lines += [f'  {name}: {error or "available"}'

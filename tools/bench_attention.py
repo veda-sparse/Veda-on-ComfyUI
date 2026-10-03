@@ -1,7 +1,7 @@
 """Times one H3 attention layer: full attention vs Veda, on this machine.
 
     python tools/bench_attention.py                      # 16:9, 5 s
-    python tools/bench_attention.py --latent-t 102 --backend flex
+    python tools/bench_attention.py --latent-t 102 --profile
 
 Synthetic q / k / v with H3's real shapes (56 heads x 128, packed text +
 audio + target video), a random predictor and the trained plan geometry;
@@ -69,8 +69,6 @@ def main() -> None:
     parser.add_argument('--aspect', default='16:9', choices=sorted(CANVAS))
     parser.add_argument('--latent-t', type=int, default=37)
     parser.add_argument('--sparsity', type=float, default=90.0)
-    parser.add_argument('--backend', default='auto',
-                        choices=backends.CHOICES)
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--device', default=None)
     parser.add_argument('--profile', action='store_true',
@@ -85,8 +83,7 @@ def main() -> None:
     seq_len = text + audio + video
     spec = h3_layout.LayoutSpec(seq_len, h3_layout.SpanSpec(
         'target', text + audio, grid), ())
-    resolution = backends.resolve(device, args.backend,
-                                  notify=lambda t: print('...', t))
+    resolution = backends.resolve(device, notify=lambda t: print('...', t))
     print(f'{resolution.device.label}: {resolution.report()}')
     if resolution.backend is None:
         sys.exit('no sparse backend works here')

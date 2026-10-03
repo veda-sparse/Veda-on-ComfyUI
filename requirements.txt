@@ -1,4 +1,5 @@
-# Veda-on-ComfyUI needs nothing beyond ComfyUI's own requirements (torch,
-# safetensors, numpy). Faster optional kernels are installed separately:
-#   NVIDIA: install_fa4 (FlashAttention-4 / CuTe DSL), see README
-#   Apple:  pip install mlx
+# Installed automatically with the node (see pyproject.toml); listed here
+# for anyone installing from a clone rather than the Comfy Registry.
+triton>=3.0; platform_system == "Linux"
+triton-windows>=3.0; platform_system == "Windows"
+mlx>=0.18; platform_system == "Darwin" and platform_machine == "arm64"

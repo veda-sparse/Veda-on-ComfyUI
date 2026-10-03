@@ -1,167 +1,103 @@
-"""Reports what this GPU and the installed CuTe DSL can do, for kernel work.
+"""Reports what this GPU and the installed Triton can do, for kernel work.
 
     python tools/probe_gpu_kernels.py
 
-Prints the device, the tensor-core throughput of the dtypes we care about,
-and which CuTe warp-level MMA / LdMatrix atoms exist and actually compile
-here. Veda's FP8 kernel work depends on facts this tool checks rather than
-on what upstream's Python-level asserts allow, so re-run it on every new
-architecture before assuming a path is unavailable.
+Prints the device, the tensor-core throughput of the dtypes the kernel
+could use, and which Triton features are available here - notably TMA,
+whose shape differs between consumer and datacenter Blackwell.
+
+The point of this tool is to answer capability questions by asking the
+hardware instead of reading someone's `assert`. An upstream gate that says
+"arch 10 only" usually means "only arch 10 has an implementation", not
+"the silicon cannot". Run this on every new architecture before concluding
+a path is unavailable.
 """
 
 from __future__ import annotations
 
-import argparse
 import time
 
 import torch
 
-try:  # only on machines with the FA4 kernel runtime
-    import cutlass
-    import cutlass.cute as cute
-    from cutlass.cute.nvgpu import warp
-    from cutlass.torch import from_dlpack
-except ImportError:  # reported by cute_atoms()
-    cutlass = None
 
-
-def _mma_build(make_op):
-    """A jit body that builds one tiled MMA (values captured by closure).
-
-    Closure cells, not default arguments: the DSL traces parameters as
-    runtime values, so a bool default arrives as a DSL value and the op
-    rejects it.
-    """
-    def build(dummy):
-        cute.make_tiled_mma(cute.make_mma_atom(make_op()))
-
-    return build
-
-
-def _ldmatrix_build(op, transpose, dtype):
-    def build(dummy):
-        cute.make_copy_atom(op(transpose=transpose, num_matrices=4), dtype)
-
-    return build
-
-
-def _compiles(build) -> str | None:
-    """None if `build` compiles for the resident GPU, else the reason.
-
-    The jit-traced function must find `cute` in module globals, so every
-    import above stays at module scope.
-    """
-    dummy = from_dlpack(torch.zeros(8, device='cuda'))
-    try:
-        cute.compile(cute.jit(build), dummy)
-        return None
-    except Exception as error:
-        first = str(error).splitlines()
-        detail = next((x for x in first if x.strip()), '')
-        return f'{type(error).__name__}: {detail[:90]}'
-
-
-def _bench(fn, repeat: int = 30) -> float:
-    fn()
+def _tflops(fn, flops: float, repeat: int = 20) -> float:
+    for _ in range(3):
+        fn()
     torch.cuda.synchronize()
     start = time.perf_counter()
     for _ in range(repeat):
         fn()
     torch.cuda.synchronize()
-    return (time.perf_counter() - start) / repeat
+    return flops * repeat / (time.perf_counter() - start) / 1e12
 
 
-def throughput(size: int = 8192) -> None:
-    """Dense GEMM throughput per dtype, as reachable through torch."""
-    print('\n== tensor-core throughput (torch paths) ==')
-    flops = 2 * size**3
-    a = torch.randn(size, size, device='cuda', dtype=torch.bfloat16)
-    b = torch.randn(size, size, device='cuda', dtype=torch.bfloat16)
-    base = _bench(lambda: a @ b)
-    print(f'bf16  {flops / base / 1e12:6.0f} TFLOPS  (1.00x)')
+def _throughput(device) -> None:
+    n = 4096
+    flops = 2.0 * n ** 3
+    print('\ndense 4096^3 GEMM, by operand dtype')
+    for label, dtype in (('bf16', torch.bfloat16), ('fp16', torch.float16)):
+        a = torch.randn(n, n, device=device, dtype=dtype)
+        b = torch.randn(n, n, device=device, dtype=dtype)
+        print(f'  {label:5s} {_tflops(lambda: a @ b, flops):7.1f} TFLOPS')
+    a8 = torch.randint(-127, 127, (n, n), device=device, dtype=torch.int8)
+    b8 = a8.t().contiguous().t()
     try:
-        af = a.to(torch.float8_e4m3fn)
-        bf = b.t().contiguous().t().to(torch.float8_e4m3fn)
-        one = torch.tensor(1.0, device='cuda')
-        seconds = _bench(lambda: torch._scaled_mm(af, bf, scale_a=one,
-                                                  scale_b=one,
-                                                  out_dtype=torch.bfloat16))
-        print(f'fp8   {flops / seconds / 1e12:6.0f} TFLOPS  '
-              f'({base / seconds:.2f}x)')
+        print(f'  int8  {_tflops(lambda: torch._int_mm(a8, b8), flops):7.1f} '
+              'TOPS')
     except Exception as error:
-        print(f'fp8   unavailable: {type(error).__name__}: {error}')
+        print(f'  int8  unavailable: {type(error).__name__}: {error}')
     try:
-        ai = torch.randint(-127, 127, (size, size), device='cuda',
-                           dtype=torch.int8)
-        bi = torch.randint(-127, 127, (size, size), device='cuda',
-                           dtype=torch.int8)
-        seconds = _bench(lambda: torch._int_mm(ai, bi))
-        print(f'int8  {flops / seconds / 1e12:6.0f} TOPS    '
-              f'({base / seconds:.2f}x)')
+        af = torch.randn(n, n, device=device).to(torch.float8_e4m3fn)
+        bf = af.t().contiguous().t()
+        scale = torch.ones((), device=device)
+        rate = _tflops(lambda: torch._scaled_mm(af, bf, scale, scale), flops)
+        print(f'  fp8   {rate:7.1f} TFLOPS')
     except Exception as error:
-        print(f'int8  unavailable: {type(error).__name__}: {error}')
+        print(f'  fp8   unavailable: {type(error).__name__}: {error}')
 
 
-def cute_atoms() -> None:
-    """Which warp-level atoms the installed CuTe DSL exposes and compiles."""
-    if cutlass is None:
-        print('\n== CuTe DSL ==\nnot installed')
+def _triton_features(capability) -> None:
+    print('\nTriton')
+    try:
+        import triton
+        import triton.language as tl
+    except ImportError as error:
+        print(f'  not installed: {error}')
         return
-    print(f'\n== CuTe DSL {cutlass.__version__} ==')
-    print('warp atoms:', ', '.join(sorted(
-        n for n in dir(warp) if n.endswith('Op'))))
-
-    print('\nMMA atoms (what the QK / PV gemms can use):')
-    mma_cases = [
-        ('MmaF16BF16Op bf16 16x8x16',
-         lambda: warp.MmaF16BF16Op(cutlass.BFloat16, cutlass.Float32,
-                                   (16, 8, 16))),
-        ('MmaFP8Op e4m3 16x8x32',
-         lambda: warp.MmaFP8Op(cutlass.Float8E4M3FN, cutlass.Float32,
-                               (16, 8, 32))),
-        ('MmaFP8Op e4m3 16x8x16',
-         lambda: warp.MmaFP8Op(cutlass.Float8E4M3FN, cutlass.Float32,
-                               (16, 8, 16))),
-        ('MmaFP8Op e5m2 16x8x32',
-         lambda: warp.MmaFP8Op(cutlass.Float8E5M2, cutlass.Float32,
-                               (16, 8, 32))),
-    ]
-    for name, make_op in mma_cases:
-        reason = _compiles(_mma_build(make_op))
-        print(f'  {"ok   " if reason is None else "FAILS"} {name}'
-              + ('' if reason is None else f': {reason}'))
-
-    # The PV gemm needs V with the contraction dim contiguous. For 16-bit
-    # operands the kernel gets that from a transposing ldmatrix; whether a
-    # 1-byte transposing load exists here decides if Veda must transpose V
-    # before the kernel sees it.
-    print('\nldmatrix atoms on 1-byte operands (V for the PV gemm):')
-    for name in sorted(n for n in dir(warp)
-                       if n.startswith('LdMatrix') and n.endswith('Op')):
-        op = getattr(warp, name)
-        for transpose in (False, True):
-            reason = _compiles(_ldmatrix_build(op, transpose,
-                                               cutlass.Float8E4M3FN))
-            print(f'  {"ok   " if reason is None else "FAILS"} '
-                  f'{name}(transpose={transpose})'
-                  + ('' if reason is None else f': {reason}'))
+    print(f'  version {triton.__version__}')
+    for name in ('make_tensor_descriptor', 'async_task', 'range'):
+        print(f'  tl.{name}: {"yes" if hasattr(tl, name) else "no"}')
+    major = capability[0] if capability else 0
+    if major >= 9:
+        # TMA exists from Hopper on, but the destination differs: SM90 and
+        # the datacenter Blackwells (SM100/103) have thread block clusters
+        # and distributed shared memory, so they can target
+        # `.shared::cluster` and multicast a tile to several CTAs. Consumer
+        # Blackwell (SM120/121) has TMA but no clusters, so every bulk copy
+        # must land in `.shared::cta` and num_ctas must stay 1. Asking for a
+        # cluster there is a compile error at best and a silent fallback at
+        # worst.
+        cluster = major in (9, 10)
+        where = ('shared::cluster (thread block clusters available)'
+                 if cluster else 'shared::cta only (no clusters, '
+                 'keep num_ctas at 1)')
+        print(f'  TMA: yes, destination {where}')
+    else:
+        print('  TMA: no (needs SM90 or newer)')
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('--size', type=int, default=8192,
-                        help='square GEMM size for the throughput test')
-    parser.add_argument('--skip-throughput', action='store_true')
-    args = parser.parse_args()
     if not torch.cuda.is_available():
-        raise SystemExit('this tool needs a CUDA GPU')
-    name = torch.cuda.get_device_name(0)
-    major, minor = torch.cuda.get_device_capability(0)
-    print(f'{name} (sm{major}{minor}) · torch {torch.__version__} · '
-          f'CUDA {torch.version.cuda}')
-    if not args.skip_throughput:
-        throughput(args.size)
-    cute_atoms()
+        raise SystemExit('needs a CUDA GPU')
+    device = torch.device('cuda')
+    capability = torch.cuda.get_device_capability(device)
+    props = torch.cuda.get_device_properties(device)
+    print(f'{props.name}: SM{capability[0]}{capability[1]}, '
+          f'{props.multi_processor_count} SMs, '
+          f'{props.total_memory / 2**30:.1f} GiB, '
+          f'torch {torch.__version__}')
+    _throughput(device)
+    _triton_features(capability)
 
 
 if __name__ == '__main__':

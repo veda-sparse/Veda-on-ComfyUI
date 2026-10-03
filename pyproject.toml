@@ -7,7 +7,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 # Nothing beyond ComfyUI's own requirements. Optional fast kernels:
 # install_fa4 (NVIDIA, requirements-fa4.txt) or `pip install mlx` (Apple).
-dependencies = []
+# Installed with the node, so the sparse kernel works without the user
+# doing anything. Triton is a real dependency now that the kernel is
+# written in it; on Linux torch already pulls the same package in, so this
+# is a no-op there far more often than not.
+dependencies = [
+    "triton>=3.0; platform_system == 'Linux'",
+    "triton-windows>=3.0; platform_system == 'Windows'",
+    "mlx>=0.18; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
 classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",

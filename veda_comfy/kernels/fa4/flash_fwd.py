@@ -59,6 +59,44 @@ from .tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, Tile
 from .utils import AuxData
 
 
+def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
+    """QK accumulator viewed as the A operand of the FP8 PV gemm.
+
+    quack's helper pairs two N tiles, which fills the 8-value A fragment
+    of the 16-bit m16n8k16 atom. The FP8 atom is m16n8k32, whose A
+    fragment holds 16 values, so four N tiles are gathered instead. The
+    two atoms also spread k over the threads differently -- the
+    accumulator gives each thread two neighbouring columns, the FP8 A
+    operand wants four -- which V is permuted to absorb; see
+    FP8_V_PERMUTATION.
+    """
+    acc_layout = acc.layout
+    assert acc_layout.shape[2] % 4 == 0
+    l = cute.logical_divide(acc_layout, (None, None, 4))
+    view = cute.make_layout(
+        (
+            (l.shape[0][0], l.shape[0][1], l.shape[2][0]),
+            l.shape[1],
+            l.shape[2][1],
+        ),
+        stride=(
+            (l.stride[0][0], l.stride[0][1], l.stride[2][0]),
+            l.stride[1],
+            l.stride[2][1],
+        ),
+    )
+    return cute.make_tensor(acc.iterator, view)
+
+
+# Slot i of the FP8 A operand carries the accumulator column at
+# FP8_V_PERMUTATION[i] (measured on an RTX 5070 and matching the operand
+# layouts: i = 4a + b maps to 2a + (b % 2) + 8 * (b // 2)). Feeding the PV
+# gemm V in this order makes the two line up.
+FP8_V_PERMUTATION = tuple(
+    2 * (i // 4) + (i % 4) % 2 + 8 * ((i % 4) // 2) for i in range(16)
+)
+
+
 class FlashAttentionForwardBase:
 
     def __init__(
@@ -662,9 +700,12 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         # the accumulator distributes its columns; the 32-wide one would
         # need V permuted to compensate.
         if self.dtype.width == 8:
-            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
-            op_pv = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
-            tile_k_qk, tile_k_pv = 16, 16
+            # e4m3 has no m16n8k16 instruction: asking for one still emits
+            # the native 32-wide step, which is why narrowing it changed
+            # nothing. Both gemms therefore run at 32.
+            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
+            op_pv = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
+            tile_k_qk, tile_k_pv = 32, 32
         else:
             op_qk = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
             op_pv = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
@@ -1387,7 +1428,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             rP.store((acc_S.load() * Float32(self.p_scale)).to(self.dtype))
         else:
             rP.store(acc_S.load().to(self.dtype))
-        tOrP = layout_utils.reshape_acc_to_frgA(rP)
+        if const_expr(self.dtype.width == 8):
+            tOrP = _reshape_acc_to_frgA_fp8(rP)
+        else:
+            tOrP = layout_utils.reshape_acc_to_frgA(rP)
         if const_expr(self.num_stages > 1):
             sync()
             load_K_next()

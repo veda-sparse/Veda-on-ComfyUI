@@ -876,7 +876,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  from cutlass.cute.nvgpu import cpasync, warp
  import cutlass.utils as utils_basic
  from cutlass.base_dsl.arch import Arch
-@@ -33,6 +42,16 @@
+@@ -33,8 +42,56 @@
  from .pack_gqa import PackGQA, pack_gqa_layout
  from .named_barrier import NamedBarrierFwd
  from .block_sparsity import BlockSparseTensors
@@ -892,8 +892,48 @@ fa4: forked from flash-attn-4 4.0.0b32
 +)
  from .tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, TileSchedulerArguments
  from .utils import AuxData
++
++
++def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
++    """QK accumulator viewed as the A operand of the FP8 PV gemm.
++
++    quack's helper pairs two N tiles, which fills the 8-value A fragment
++    of the 16-bit m16n8k16 atom. The FP8 atom is m16n8k32, whose A
++    fragment holds 16 values, so four N tiles are gathered instead. The
++    two atoms also spread k over the threads differently -- the
++    accumulator gives each thread two neighbouring columns, the FP8 A
++    operand wants four -- which V is permuted to absorb; see
++    FP8_V_PERMUTATION.
++    """
++    acc_layout = acc.layout
++    assert acc_layout.shape[2] % 4 == 0
++    l = cute.logical_divide(acc_layout, (None, None, 4))
++    view = cute.make_layout(
++        (
++            (l.shape[0][0], l.shape[0][1], l.shape[2][0]),
++            l.shape[1],
++            l.shape[2][1],
++        ),
++        stride=(
++            (l.stride[0][0], l.stride[0][1], l.stride[2][0]),
++            l.stride[1],
++            l.stride[2][1],
++        ),
++    )
++    return cute.make_tensor(acc.iterator, view)
++
++
++# Slot i of the FP8 A operand carries the accumulator column at
++# FP8_V_PERMUTATION[i] (measured on an RTX 5070 and matching the operand
++# layouts: i = 4a + b maps to 2a + (b % 2) + 8 * (b // 2)). Feeding the PV
++# gemm V in this order makes the two line up.
++FP8_V_PERMUTATION = tuple(
++    2 * (i // 4) + (i % 4) % 2 + 8 * ((i % 4) // 2) for i in range(16)
++)
  
-@@ -57,6 +76,7 @@
+ 
+ class FlashAttentionForwardBase:
+@@ -57,6 +114,7 @@
          mask_mod: Optional[cutlass.Constexpr] = None,
          has_aux_tensors: bool = False,
          q_subtile_factor: int = 1,
@@ -901,7 +941,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      ):
          """Initializes the configuration for a flash attention kernel.
  
-@@ -78,6 +98,15 @@
+@@ -78,6 +136,15 @@
              Callable signature: ``mask_mod(batch_idx, head_idx, q_idx, kv_idx, aux_tensors) -> Boolean``
          """
          self.dtype = dtype
@@ -917,7 +957,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          # padding head_dim to a multiple of 16 as k_block_size
          hdim_multiple_of = 16
          self.tile_hdim = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
-@@ -96,6 +125,8 @@
+@@ -96,6 +163,8 @@
          self.num_threads = num_threads
          self.num_stages = num_stages
          self.q_subtile_factor = q_subtile_factor
@@ -926,7 +966,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          self.Q_in_regs = Q_in_regs
          self.score_mod = score_mod
          self.mask_mod = mask_mod
-@@ -146,7 +177,12 @@
+@@ -146,7 +215,12 @@
          :return: True if the kernel can be implemented, False otherwise
          :rtype: bool
          """
@@ -940,7 +980,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              return False
          if head_dim % 8 != 0:
              return False
-@@ -156,11 +192,16 @@
+@@ -156,11 +230,16 @@
              return False
          if num_threads % 32 != 0:
              return False
@@ -960,7 +1000,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          smem_usage_QV = (
              (smem_usage_Q + smem_usage_V) if not Q_in_regs else max(smem_usage_Q, smem_usage_V)
          )
-@@ -186,11 +227,19 @@
+@@ -186,11 +265,19 @@
          mSeqUsedQ_type: Type[cutlass.Numeric] | None,
          mSeqUsedK_type: Type[cutlass.Numeric] | None,
      ):
@@ -985,7 +1025,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          if const_expr(mLSE_type not in [None, Float32]):
              raise TypeError("LSE tensor must be Float32")
          if const_expr(mCuSeqlensQ_type not in [None, Int32]):
-@@ -210,6 +259,10 @@
+@@ -210,6 +297,10 @@
          sQ_layout_atom, sK_layout_atom, sV_layout_atom, sO_layout_atom, sP_layout_atom = (
              self._get_smem_layout_atom()
          )
@@ -996,7 +1036,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          self.sQ_layout = cute.tile_to_shape(
              sQ_layout_atom,
              (self.tile_m, self.tile_hdim),
-@@ -222,7 +275,9 @@
+@@ -222,7 +313,9 @@
          )
          self.sV_layout = cute.tile_to_shape(
              sV_layout_atom,
@@ -1007,7 +1047,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              (0, 1, 2),
          )
          self.sO_layout = cute.tile_to_shape(
-@@ -252,13 +307,14 @@
+@@ -252,13 +345,14 @@
              num_bits_per_copy=universal_copy_bits,
          )
          # atom_universal_copy: universal copy atom for O store
@@ -1024,7 +1064,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          assert self.num_Q_load_threads % tQK_shape_dim_1 == 0, (
              "num_threads must be divisible by tQK_shape_dim_1"
          )
-@@ -275,15 +331,15 @@
+@@ -275,15 +369,15 @@
          )
          # So that we don't have to check if we overshoot kBlockM when we load Q
          assert self.tile_m % tQ_layout.shape[0] == 0
@@ -1044,7 +1084,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              order=(1, 0),
          )
          # So that we don't have to check if we overshoot kBlockM when we store O
-@@ -291,7 +347,7 @@
+@@ -291,7 +385,7 @@
  
          # Value layouts for copies
          vQKV_layout = cute.make_layout((1, async_copy_elems))
@@ -1053,7 +1093,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
          self.gmem_tiled_copy_Q = cute.make_tiled_copy_tv(atom_async_copy, tQ_layout, vQKV_layout)
          self.gmem_tiled_copy_K = cute.make_tiled_copy_tv(atom_async_copy, tK_layout, vQKV_layout)
-@@ -345,13 +401,15 @@
+@@ -345,13 +439,15 @@
          batch_idx: Int32,
      ):
          # store acc_O
@@ -1072,7 +1112,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          smem_thr_copy_O = cute.make_tiled_copy_C(smem_copy_atom_O, tiled_mma).get_slice(tidx)
          taccOrO = smem_thr_copy_O.retile(rO)
          taccOsO = smem_thr_copy_O.partition_D(sO)
-@@ -422,7 +480,7 @@
+@@ -422,7 +518,7 @@
              )
              gmem_thr_copy_O = gmem_tiled_copy_O.get_slice(tidx)
              tOsO = gmem_thr_copy_O.partition_S(sO)
@@ -1081,7 +1121,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              # load acc O from smem to rmem for wider vectorization
              cute.autovec_copy(tOsO, tOrO)
              if const_expr(not self.pack_gqa):
-@@ -580,30 +638,60 @@
+@@ -580,30 +676,63 @@
      def _get_smem_layout_atom(self):
          sQ_layout_atom = sm80_utils.get_smem_layout_atom(self.dtype, self.tile_hdim)
          sK_layout_atom = sQ_layout_atom
@@ -1108,9 +1148,12 @@ fa4: forked from flash-attn-4 4.0.0b32
 +        # the accumulator distributes its columns; the 32-wide one would
 +        # need V permuted to compensate.
 +        if self.dtype.width == 8:
-+            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
-+            op_pv = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
-+            tile_k_qk, tile_k_pv = 16, 16
++            # e4m3 has no m16n8k16 instruction: asking for one still emits
++            # the native 32-wide step, which is why narrowing it changed
++            # nothing. Both gemms therefore run at 32.
++            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
++            op_pv = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
++            tile_k_qk, tile_k_pv = 32, 32
 +        else:
 +            op_qk = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
 +            op_pv = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
@@ -1151,7 +1194,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          sQV_struct = cute.struct.Align[cute.struct.MemRange[self.dtype, cosize_sQV], 1024]
  
          @cute.struct
-@@ -616,6 +704,22 @@
+@@ -616,6 +745,22 @@
          class SharedStorageSharedQV:
              sQ: sQV_struct
              sK: sK_struct
@@ -1174,7 +1217,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
          return SharedStorageQKV if const_expr(not self.Q_in_regs) else SharedStorageSharedQV
  
-@@ -636,7 +740,7 @@
+@@ -636,7 +781,7 @@
          window_size_left: Int32 | int | None = None,
          window_size_right: Int32 | int | None = None,
          learnable_sink: Optional[cute.Tensor] = None,
@@ -1183,7 +1226,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          aux_data: AuxData = AuxData(),
          mCuTotalMBlocks: Optional[cute.Tensor] = None,
          mCuTotalSplitsMBlocks: Optional[cute.Tensor] = None,
-@@ -649,6 +753,18 @@
+@@ -649,6 +794,18 @@
          (batch_size, seqlen_q, num_head, head_dim):(_, _, _, 1)
          """
          assert learnable_sink is None, "Learnable sink is not supported in this kernel"
@@ -1202,7 +1245,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          self._check_type(
              *(t.element_type if t is not None else None for t in (mQ, mK, mV, mO, mLSE, mCuSeqlensQ, mCuSeqlensK, mSeqUsedQ, mSeqUsedK))
          )
-@@ -658,6 +774,7 @@
+@@ -658,6 +815,7 @@
          self.num_Q_load_threads = self.num_threads
          self.num_epilogue_threads = self.num_threads
          self.use_tma_O = Arch.sm_90 <= self.arch < Arch.sm_120
@@ -1210,7 +1253,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          self._setup_attributes()
          SharedStorage = self._get_shared_storage_cls()
          mQ, mK, mV, mO = [assume_tensor_aligned(t) for t in (mQ, mK, mV, mO)]
-@@ -698,7 +815,8 @@
+@@ -698,7 +856,8 @@
              num_splits=1,
              seqlen_k=0,
              headdim=mQ.shape[1],
@@ -1220,7 +1263,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              total_q=cute.size(mQ.shape[0])
              if const_expr(mCuSeqlensQ is not None)
              else cute.size(mQ.shape[0]) * cute.size(mQ.shape[3]),
-@@ -744,6 +862,7 @@
+@@ -744,6 +903,7 @@
              TileScheduler,
              aux_data,
              fastdiv_mods,
@@ -1228,7 +1271,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          ).launch(
              grid=grid_dim,
              block=[self.num_threads, 1, 1],
-@@ -767,11 +886,13 @@
+@@ -767,11 +927,13 @@
          softmax_scale: Optional[Float32],
          window_size_left: Optional[Int32],
          window_size_right: Optional[Int32],
@@ -1247,7 +1290,7 @@ fa4: forked from flash-attn-4 4.0.0b32
          gmem_tiled_copy_Q: cute.TiledCopy,
          gmem_tiled_copy_K: cute.TiledCopy,
          gmem_tiled_copy_V: cute.TiledCopy,
-@@ -783,6 +904,7 @@
+@@ -783,6 +945,7 @@
          TileScheduler: cutlass.Constexpr[Callable],
          aux_data: AuxData = AuxData(),
          fastdiv_mods=None,
@@ -1255,7 +1298,7 @@ fa4: forked from flash-attn-4 4.0.0b32
      ):
          # Thread index, block index
          tidx, _, _ = cute.arch.thread_idx()
-@@ -824,7 +946,10 @@
+@@ -824,7 +987,10 @@
              # ///////////////////////////////////////////////////////////////////////////////
              blkQ_shape = (self.tile_m, self.tile_hdim)
              blkK_shape = (self.tile_n, self.tile_hdim)
@@ -1267,7 +1310,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              num_head_kv = num_head if const_expr(self.pack_gqa) else num_head // self.qhead_per_kvhead
              mQ_cur = seqlen.offset_batch_Q(mQ, batch_size, dim=3)[None, None, num_head]
              if const_expr(not seqlen.has_cu_seqlens_k):
-@@ -836,7 +961,10 @@
+@@ -836,7 +1002,10 @@
              if const_expr(not self.pack_gqa):
                  gQ = cute.local_tile(mQ_cur, blkQ_shape, (m_block, 0))
              gK = cute.local_tile(mK_cur, blkK_shape, (None, 0))
@@ -1279,7 +1322,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
              # ///////////////////////////////////////////////////////////////////////////////
              # Get shared memory buffer
-@@ -849,8 +977,9 @@
+@@ -849,8 +1018,9 @@
                  sV = storage.sV.get_tensor(sV_layout)
              else:
                  sV = cute.make_tensor(cute.recast_ptr(sQ.iterator, dtype=self.dtype), sV_layout)
@@ -1291,7 +1334,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
              gmem_thr_copy_K = gmem_tiled_copy_K.get_slice(tidx)
              gmem_thr_copy_V = gmem_tiled_copy_V.get_slice(tidx)
-@@ -874,14 +1003,30 @@
+@@ -874,14 +1044,30 @@
              # ///////////////////////////////////////////////////////////////////////////////
              # Smem copy atom tiling
              # ///////////////////////////////////////////////////////////////////////////////
@@ -1330,7 +1373,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              smem_thr_copy_Q = utils.make_tiled_copy_A(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
              smem_thr_copy_K = utils.make_tiled_copy_B(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
              smem_thr_copy_V = utils.make_tiled_copy_B(smem_copy_atom_V, tiled_mma_pv).get_slice(tidx)
-@@ -902,7 +1047,10 @@
+@@ -902,7 +1088,10 @@
                  tVcV = tKcK
                  t0VcV = t0KcK
              else:
@@ -1342,7 +1385,7 @@ fa4: forked from flash-attn-4 4.0.0b32
                  tVcV = gmem_thr_copy_V.partition_S(cV)
                  t0VcV = gmem_thr_copy_V.get_slice(0).partition_S(cV)
              # Allocate predicate tensors for m and n, here we only allocate the tile of k, and
-@@ -980,35 +1128,6 @@
+@@ -980,35 +1169,6 @@
                      tSrQ_copy_view = smem_thr_copy_Q.retile(tSrQ)
                      cute.copy(smem_thr_copy_Q, tSsQ, tSrQ_copy_view)
  
@@ -1378,7 +1421,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              mask = AttentionMask(
                  self.tile_m,
                  self.tile_n,
-@@ -1029,45 +1148,96 @@
+@@ -1029,45 +1189,96 @@
                  fastdiv_mods=fastdiv_mods if const_expr(self.mask_mod is not None) else None,
              )
  
@@ -1509,7 +1552,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
              # normalize acc_O by row_sum and calculate the lse
              row_scale = softmax.finalize()
-@@ -1077,7 +1247,9 @@
+@@ -1077,7 +1288,9 @@
              # Epilogue
              # ///////////////////////////////////////////////////////////////////////////////
              # reuse sQ's data iterator
@@ -1520,7 +1563,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              self.epilogue(
                  acc_O,
                  softmax.row_sum,
-@@ -1115,12 +1287,20 @@
+@@ -1115,12 +1328,20 @@
          mask_fn: Optional[Callable] = None,
          is_first_n_block: cutlass.Constexpr = False,
          check_inf: cutlass.Constexpr = True,
@@ -1541,7 +1584,7 @@ fa4: forked from flash-attn-4 4.0.0b32
  
          def sync():
              cute.arch.cp_async_wait_group(self.num_stages * 2 - 2)
-@@ -1134,12 +1314,18 @@
+@@ -1134,12 +1355,18 @@
  
          # need predicates for the first tile
          def load_V_next():
@@ -1566,7 +1609,7 @@ fa4: forked from flash-attn-4 4.0.0b32
              cute.arch.cp_async_commit_group()
  
          load_V_next()
-@@ -1174,8 +1360,15 @@
+@@ -1174,8 +1401,15 @@
          smem_pipe_write = self.advance_pipeline(smem_pipe_write)
  
          def load_K_next():
@@ -1584,19 +1627,24 @@ fa4: forked from flash-attn-4 4.0.0b32
              cute.arch.cp_async_commit_group()
  
          # wait for smem tile V for O
-@@ -1187,7 +1380,10 @@
+@@ -1187,8 +1421,14 @@
          row_scale = softmax.online_softmax(acc_S, is_first=is_first_n_block, check_inf=check_inf)
          softmax.rescale_O(mma_params.acc_O, row_scale)
          rP = cute.make_fragment_like(acc_S, self.dtype)
 -        rP.store(acc_S.load().to(self.dtype))
+-        tOrP = layout_utils.reshape_acc_to_frgA(rP)
 +        if const_expr(self.p_scale != 1.0):
 +            rP.store((acc_S.load() * Float32(self.p_scale)).to(self.dtype))
 +        else:
 +            rP.store(acc_S.load().to(self.dtype))
-         tOrP = layout_utils.reshape_acc_to_frgA(rP)
++        if const_expr(self.dtype.width == 8):
++            tOrP = _reshape_acc_to_frgA_fp8(rP)
++        else:
++            tOrP = layout_utils.reshape_acc_to_frgA(rP)
          if const_expr(self.num_stages > 1):
              sync()
-@@ -1205,6 +1401,155 @@
+             load_K_next()
+@@ -1205,6 +1445,155 @@
          )
          # if const_expr(self.num_stages > 1):
          #     load_K_next()

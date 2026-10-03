@@ -67,6 +67,15 @@ def _valid_key_mask_mod():
 _E4M3_MAX = 448.0
 
 
+@functools.cache
+def _v_permutation(slots: int, device: torch.device) -> torch.Tensor:
+    """Key-slot order the FP8 PV gemm expects, repeated every 16 rows."""
+    from ..kernels.fa4.flash_fwd import FP8_V_PERMUTATION
+    base = torch.tensor(FP8_V_PERMUTATION, dtype=torch.long, device=device)
+    groups = torch.arange(0, slots, 16, device=device)[:, None]
+    return (groups + base[None, :]).reshape(-1)
+
+
 def _to_fp8(x: torch.Tensor) -> tuple[torch.Tensor, float]:
     """(e4m3 view of x, the scale that undoes it).
 
@@ -107,7 +116,10 @@ class Fa4Sm120Backend(base.Backend):
             k, k_s = _to_fp8(k)
             v, v_scale = _to_fp8(v)
             # The FP8 PV gemm reads V with the contraction dim contiguous,
-            # so hand the kernel (head_dim_v, slots) per head.
+            # so hand the kernel (head_dim_v, slots) per head, with the
+            # key slots reordered to absorb the difference between how the
+            # accumulator and the FP8 A operand spread k over the threads.
+            v = v[_v_permutation(v.shape[0], v.device)]
             v = v.permute(2, 1, 0).contiguous()[None]
             scale *= q_s * k_s
         with _CALL_LOCK, torch.no_grad():

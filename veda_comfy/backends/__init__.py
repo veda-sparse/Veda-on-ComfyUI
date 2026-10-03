@@ -2,13 +2,17 @@
 
 Candidates per device (first that loads and passes its self-test wins):
 
-    CUDA sm80/86/87/89  fa4-sm80 (patched FA4) -> flex -> torch
-    CUDA sm90           fa4-sm90 (upstream FA4) -> flex -> torch
-    CUDA sm100/103/110  fa4-sm100 (upstream FA4) -> flex -> torch
-    CUDA sm120/121      fa4-sm120 (patched FA4) -> flex -> torch
+    CUDA sm80 and up    triton-int8 -> fa4-<family> -> flex -> torch
     ROCm                flex -> torch
     Apple MPS           mlx -> torch
     CPU                 torch
+
+`triton-int8` is the default everywhere Triton runs: it is SageAttention's
+INT8 arithmetic, which is what ComfyUI itself uses for low-precision
+attention, and it is both faster and more accurate than the bf16 CuTe
+kernels. Those stay behind it as the fallback, per FA4 family:
+fa4-sm80 (SM80/86/87/89), fa4-sm90, fa4-sm100 (SM100/103/110),
+fa4-sm120 (SM120/121).
 
 Backend modules are imported lazily and only here, so a broken or missing
 kernel package costs one entry in the report, never the node.
@@ -27,12 +31,14 @@ import torch
 from . import base
 from .. import hardware
 
-# User-facing choices (the node's `backend` input). 'fa4-fp8' runs the
-# same kernels with e4m3 operands on the architectures whose FA4 build has
-# FP8 tensor cores (SM8x / SM120).
-CHOICES = ('auto', 'fa4', 'fa4-fp8', 'flex', 'torch', 'mlx')
+# User-facing choices (the node's `backend` input). The FP8 variants of
+# the FA4 kernels are loadable by name for tools and tests but are not
+# offered: they are slower and ~4x less accurate than triton-int8 (see
+# docs/features/int8_kernel.md).
+CHOICES = ('auto', 'int8', 'fa4', 'flex', 'torch', 'mlx')
 
 _MODULES = {
+    'triton-int8': 'triton_int8',
     'fa4-sm80': 'fa4_sm80', 'fa4-sm90': 'fa4_sm90',
     'fa4-sm100': 'fa4_sm100', 'fa4-sm120': 'fa4_sm120',
     'flex': 'flex', 'torch': 'torch_gather', 'mlx': 'mlx_gather',
@@ -76,7 +82,8 @@ def candidates(info: hardware.DeviceInfo, requested: str = 'auto'
     """Backend names to try on a device, best first."""
     if info.kind == 'cuda' and info.family != 'rocm':
         fa4 = _FA4_BY_MAJOR.get(info.cc[0]) if info.cc else None
-        auto = [fa4, 'flex', 'torch']
+        int8 = 'triton-int8' if info.cc and info.cc >= (8, 0) else None
+        auto = [int8, fa4, 'flex', 'torch']
     elif info.kind == 'cuda':
         fa4, auto = None, ['flex', 'torch']
     elif info.kind == 'mps':
@@ -86,7 +93,11 @@ def candidates(info: hardware.DeviceInfo, requested: str = 'auto'
     auto = [name for name in auto if name]
     if requested in ('auto', '', None):
         return auto
-    if requested in ('fa4', 'fa4-fp8'):
+    if requested == 'int8':
+        first = 'triton-int8'
+        if first not in auto:
+            return auto
+    elif requested in ('fa4', 'fa4-fp8'):
         if fa4 is None:
             return auto
         first = fa4

@@ -71,7 +71,7 @@ def _problem(device, seq_len=6000, heads=4, seed=0):
     return q, k, v, mask, layout
 
 
-@pytest.mark.parametrize('name', ['fa4', 'flex', 'torch', 'mlx'])
+@pytest.mark.parametrize('name', ['int8', 'fa4', 'flex', 'torch', 'mlx'])
 @pytest.mark.parametrize('device', _devices(), ids=str)
 def test_backend_matches_reference(device, name):
     info = hardware.describe(device)

@@ -83,9 +83,11 @@ def _info(cc, name='NVIDIA GeForce RTX 4090', kind='cuda'):
 def test_sm_families_and_candidates(cc, name, family, subtype, fa4):
     info = _info(cc, name)
     assert (info.family, info.subtype) == (family, subtype)
-    assert backends.candidates(info) == [fa4, 'flex', 'torch']
-    assert backends.candidates(info, 'flex') == ['flex', fa4, 'torch']
+    int8 = 'triton-int8'
+    assert backends.candidates(info) == [int8, fa4, 'flex', 'torch']
+    assert backends.candidates(info, 'flex') == ['flex', int8, fa4, 'torch']
     assert backends.candidates(info, 'fa4')[0] == fa4
+    assert backends.candidates(info, 'int8')[0] == int8
 
 
 def test_non_cuda_candidates():

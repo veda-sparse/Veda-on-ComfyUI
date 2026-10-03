@@ -137,6 +137,9 @@ def main() -> None:
               'the torch model below stands in for it)')
     rows.append((f'{fp8.name} (FP8)', lambda: fp8.attend(q, k, v, mask,
                                                          layout)))
+    ours = backends._load('triton-int8', info)
+    rows.append((f'{ours.name} (ours)', lambda: ours.attend(q, k, v, mask,
+                                                            layout)))
 
     results = {}
     print(f'\n{"":28s}  rel L2 vs fp32   max err / absmax')
@@ -149,7 +152,7 @@ def main() -> None:
         print(f'  {label:26s}  {rel:12.3%}   {peak:14.3%}')
 
     int8 = results['ComfyUI INT8 model (torch)']
-    ours = results[f'{fp8.name} (FP8)']
+    ours = results[f'{ours.name} (ours)']
     rel = (ours - int8).norm().item() / int8.norm().item()
     print(f'\nFP8 against the INT8 path directly: rel L2 {rel:.3%}')
     int8_err = (int8 - want).norm().item() / denom

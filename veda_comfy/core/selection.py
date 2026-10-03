@@ -201,3 +201,27 @@ def block_mask(index: torch.Tensor, keep: torch.Tensor,
     mask[:, :, n_video:] = layout.kv_ok[n_video:]
     mask[:, n_video:, :] = layout.kv_ok
     return mask
+
+
+def tile_index_list(mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """A block mask as the per-row list of kept key tiles.
+
+    Kernels that walk only the kept tiles want the tile ids, not a dense
+    mask. Rows keep different numbers of tiles (the budget is spread by
+    Bresenham), so the list is padded to the widest row and paired with a
+    count; entries past the count are never read.
+
+    Args:
+        mask: [H', n_tiles, n_tiles] bool from block_mask().
+
+    Returns:
+        (index [H', n_tiles, max_kept] int32, ascending tile ids;
+         count [H', n_tiles] int32).
+    """
+    count = mask.sum(-1, dtype=torch.int32)
+    widest = int(count.max().item()) if count.numel() else 0
+    # A stable descending sort of the mask puts the kept tiles first and
+    # leaves them in ascending tile order, which is what the kernels walk.
+    order = torch.argsort(mask.to(torch.int8), dim=-1, descending=True,
+                          stable=True)
+    return order[..., :widest].to(torch.int32).contiguous(), count

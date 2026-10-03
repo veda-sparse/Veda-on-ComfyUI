@@ -2,10 +2,11 @@
 
 | 现象 | 原因 | 对策 | 详情 |
 |---|---|---|---|
-| FA4 在 Windows 上 import 失败（`No module named 'fcntl'`） | FA4 的 `cache_utils.py` 与 QuACK 的 `cache/*.py` 顶层 `import fcntl` | FA4 与 QuACK 都 vendor，`fcntl` 改为可选 | [fa4_vendoring](features/fa4_vendoring.md) |
-| install_fa4 装完后自检说 `No module named 'cutlass'` | 同一个进程里刚装的包被 import 缓存挡住 | 安装后在新的子进程里跑自检 | [packaging_release](features/packaging_release.md) |
-| 上游 FA4 在 SM8x 上"块稀疏"其实算的是 dense | SM80 kernel 收到块稀疏参数但不使用 | 用打过补丁的副本；自检检查"不是 dense" | [backends](features/backends.md) |
-| 生成的 vendored 文件语法错误（两行粘连） | import 改写正则吞掉了行尾换行 | 保留结尾空白；对生成文件做 `ast.parse` 测试 | [fa4_vendoring](features/fa4_vendoring.md) |
+| ComfyUI 的 INT8 不是"奇怪"，是更准 | e4m3 只有 3 位尾数（~3.6%/值），INT8 per-block 是 127 个均匀档（~0.9%） | 量化注意力一律走 INT8；结论靠 `tools/compare_int8.py` 实测，不靠推理 | [int8_kernel](features/int8_kernel.md) |
+| CuTe 做不了 INT8 注意力 | DSL 4.8.0 的 warp 层没有整数 MMA，`MmaI8Op` 只在 SM100 的 `tcgen05` 下 | kernel 写在 Triton（`tl.dot` 原生支持 int8） | [int8_kernel](features/int8_kernel.md) |
+| 回退链让测速一直在量错的 kernel | 自检失败就静默换后端，摘要行在很靠上的位置 | 一个设备一个 kernel，不回退，装不上就报错 | [backends](features/backends.md) |
+| 自检把正确的量化 kernel 判死 | 2% 的逐点容差是 16 位时代的常数 | 容差改成 `Backend.tolerance`，报错同时打印允许值 | [backends](features/backends.md) |
+| Triton `tl.load(mask=...)` 没有掩掉越界 key | `other` 默认 0，0 会以 `exp2(0-m)` 的权重进 softmax | 在分数上掩成 -inf，`m_i` 用有限的 -1e30 初值避免 NaN | [int8_kernel](features/int8_kernel.md) |
 | pytest 报 "attempted relative import with no known parent package" | pytest 把仓库根的 `__init__.py` 当包导入 | 根 `__init__.py` 只在 `__package__` 非空时 import | [comfyui_node](features/comfyui_node.md) |
 | 测试里的 H3 前向报 "in-place RoPE ... do not support autograd" | 测试模型参数 `requires_grad=True` | `requires_grad_(False)` | [comfyui_node](features/comfyui_node.md) |
 | 本地 HTTP 测试服务器启动 35 秒 | `server_bind` 的反向 DNS | 覆写 `server_bind` | [comfyui_node](features/comfyui_node.md) |

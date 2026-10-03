@@ -2,7 +2,7 @@
 
 本文件是所有在本仓库工作的 agent（以及人）必须遵守的规则。开始任何工作前先读完本文件和
 `docs/INDEX.md`。规则沿用 [Miowtion](https://github.com/veda-sparse/Miowtion) 的 AGENTS.md，
-并加上 ComfyUI 节点特有的部分（多后端隔离、跨平台、打包发布）。
+并加上 ComfyUI 节点特有的部分（后端隔离、跨平台、打包发布）。
 
 ## 项目简介
 
@@ -15,7 +15,8 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 - `veda_comfy/core`：与设备、与 ComfyUI 都无关的纯 torch 逻辑（tile 排列、方案表、打分器、
   选择规则、单次调用引擎）。规则与 Miowtion 训练时一致，是契约，不是实现细节。
 - `veda_comfy/backends`：每个 kernel 家族一个模块，彼此隔离（见 1.6）。
-- `veda_comfy/kernels`：**我们自己维护的 FA4 CuTe fork**（含它需要的 QuACK 模块），直接编辑（见 3）。
+- `veda_comfy/kernels`：我们自己写的 kernel（`sage/`：Triton INT8 块稀疏，算术取自
+  SageAttention v1，见 3）。
 
 ## 1. 基本规则（必须遵守）
 
@@ -41,10 +42,10 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
   | scope | 范围 |
   |---|---|
   | `veda` | `veda_comfy/core`、`settings.py`、`hardware.py` |
-  | `backends` | `veda_comfy/backends/*`（一次只改一个后端时写成 `backends/fa4-sm120:` 也可以） |
-  | `kernels` | `veda_comfy/kernels`（FA4 CuTe fork）、`tools/fa4_upstream_diff.py` |
+  | `backends` | `veda_comfy/backends/*`（一次只改一个后端时写成 `backends/triton-int8:` 也可以） |
+  | `kernels` | `veda_comfy/kernels/*` |
   | `comfy` | `nodes.py`、`comfy_patch.py`、`status.py`、`downloads.py`、示例工作流 |
-  | `install` | `install_fa4.*`、`requirements*.txt` |
+  | `install` | `requirements.txt`、`pyproject.toml` 的 `dependencies` |
   | `release` | `pyproject.toml` 版本号与发布 |
   | `tests` / `tools` / `docs` | 只改这些目录时 |
   | `repo` | AGENTS.md、CI、hooks、gitignore 等仓库层面的改动 |
@@ -72,7 +73,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 
 ### 1.4 编码风格
 
-- 遵循 Google Python Style Guide：4 空格、行宽 80（`ruff check .` 必须通过，FA4 fork 除外）、
+- 遵循 Google Python Style Guide：4 空格、行宽 80（`ruff check .` 必须通过）、
   `snake_case` / `CapWords` / `UPPER_CASE`、模块私有符号加 `_` 前缀、Google 风格 docstring。
 - 公共函数写类型注解；张量参数在 docstring 里写 shape 与 dtype，例如 `q: [S, H, D] bf16`。
 - 参数不合法时显式 `raise`，错误信息是给用户看的：说清楚哪里错了、应该怎么写
@@ -104,14 +105,14 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 
 - 每个后端是 `veda_comfy/backends/` 下的一个独立模块，只能 import `backends/base.py`、
   torch、`veda_comfy.core` 和它自己的 kernel 包。**后端之间禁止互相 import，禁止共享可变状态。**
-  相似代码（例如几个 FA4 后端的 mask_mod）宁可重复也不要抽成共享模块。
+  相似代码宁可重复也不要抽成共享模块。
 - 后端只通过 `base.Backend.attend` 这一个接口被调用；接口改动等于改所有后端，必须在所有
   受影响的架构上重跑 `tests/gpu`。
 - 每个后端在使用前都要通过 `base.self_test`（包括"不能忽略块掩码"的检查）。新增后端必须
   写进 `backends/__init__.py` 的候选表，并在 `docs/hardware.md` 登记状态。
-- `veda_comfy/kernels/fa4` 被**所有** FA4 后端共用。改公共部分（interface、ampere_helpers、
-  QuACK 辅助）必须在所有能摸到的架构上回归；只改某个 `flash_fwd_smXX.py` 时影响面才局限在那个
-  家族。SM120 的 kernel 继承 SM80 的类，所以改 SM80 必然影响 SM120。
+- `veda_comfy/kernels/*` 下的每个 kernel 包只被它自己的后端使用。Triton kernel 是按设备
+  即时编译的一份代码，所以改它等于改**所有** CUDA 架构：改完要在能摸到的每一种 SM 上回归，
+  不能只验一张卡。
 - 修一个后端的问题，只改那个后端的文件；需要动 `core/` 或 `base.py` 时单独提交并说明影响面。
 
 ### 1.7 跨平台（Windows / Linux / macOS）
@@ -132,9 +133,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
 ```
 __init__.py          ComfyUI 入口（只 import veda_comfy.nodes.comfy_entrypoint）
 pyproject.toml       包元数据与 Comfy Registry 配置（版本号的唯一来源）
-requirements.txt     运行依赖（刻意为空：只用 ComfyUI 自带的）
-requirements-fa4.txt 可选的 FA4 运行时依赖（install_fa4.py 安装）
-install_fa4.py/.bat/.sh  可选 kernel 安装 + 后端自检
+requirements.txt     运行依赖（与 pyproject 的 dependencies 一致，给 clone 安装的人）
 veda_comfy/
   nodes.py           ComfyUI 节点定义（唯一 import comfy_api 的地方）
   comfy_patch.py     attention override、生命周期回调、运行统计
@@ -145,11 +144,10 @@ veda_comfy/
   core/              tiling / plans / bundle / predictor / selection / h3_layout /
                      engine / reference（纯 torch，不 import ComfyUI）
   backends/          base + 每个 kernel 家族一个模块（见 1.6）
-  kernels/           FA4 CuTe fork（fa4/ + 它需要的 quack/，直接编辑；
-                     UPSTREAM.diff 是相对上游的 provenance）
+  kernels/           sage/：Triton INT8 块稀疏 kernel（算术取自 SageAttention v1）
 example_workflows/   示例工作流（由 tools/make_example_workflows.py 生成）
 assets/              图标
-tools/               维护工具：fa4_upstream_diff.py、probe_gpu_kernels.py、
+tools/               维护工具：probe_gpu_kernels.py、compare_int8.py、
                      make_example_workflows.py、bench_attention.py、
                      e2e_minimax_h3.py
 tests/unit/          CPU 测试（每次提交前必须全过）
@@ -165,19 +163,15 @@ docs/                知识库
 
 ## 3. 外部依赖的处理
 
-- **运行依赖为零**：只用 ComfyUI 已有的 torch / safetensors / numpy。任何新依赖都必须是
-  可选的（import 失败时该后端报 `BackendUnavailable`，节点照常工作），并登记在
-  `docs/dependencies.md`。**绝不声明或锁定 torch。**
-- **FA4 是 fork，不是依赖**：`veda_comfy/kernels/fa4`（+ 它需要的 `quack/`）从
-  flash-attn-4 4.0.0b32 与 quack-kernels 0.6.5 fork 而来，只保留入口闭包用得到的模块，
-  import 改成相对的（私有包，不影响其他节点使用 FlashAttention）。**直接编辑它**，像仓库里
-  其他代码一样提交。
-  - 它保留上游的代码风格（ruff 不检查这两个目录），这样 `UPSTREAM.diff` 可读、将来合并上游
-    可行。
-  - `tools/fa4_upstream_diff.py --write` 刷新 `veda_comfy/kernels/UPSTREAM.diff`，这是
-    BSD-3 / Apache-2.0 声明指向的改动记录；**每次改 fork 都要刷新并同提交**，CI 会校验。
-  - 升级上游 = 改 tool 里锁定的 wheel 与 sha256、把 fork 对上新基线、重新生成 diff，单独提交，
-    并在所有能摸到的架构上跑 `tests/gpu`。
+- **依赖要少，而且要能自动装上**：目前只有 triton（Linux）/ triton-windows（Windows）/
+  mlx（Apple），都写在 `pyproject.toml` 的 `dependencies` 里并带 environment marker，装节点
+  就装好。每条都必须带 marker——Manager 装 requirements 时一个装不上就整体失败。
+  新依赖要登记在 `docs/dependencies.md`。**绝不声明或锁定 torch。**
+- **kernel 是我们自己的代码，不是 vendored 依赖**：`veda_comfy/kernels/sage` 的算术取自
+  SageAttention v1（BSD-3），但文件是我们写的、我们维护的，像仓库里其他代码一样读写和
+  lint。模块 docstring 必须写清楚哪些是上游的、哪些是我们改的，`NOTICE.md` 登记许可。
+  - 曾经这里是一份 FA4 CuTe fork 加一套补丁/provenance 工具。教训：**生成出来的代码很难改**。
+    一次 sha256 更新的正则静默失配，三轮 GPU 测的都是旧 kernel。能直接写就直接写。
 - 移植的小段外部代码要在旁边注明来源与许可证（需与 MIT 兼容）；第三方声明写进 `NOTICE.md`。
 - 模型权重不进仓库；打分器在运行时下载（`downloads.KNOWN_PREDICTORS` 锁定 repo、revision、
   sha256、大小）。发布新的打分器 = 在那里加一项，并更新示例工作流。
@@ -186,7 +180,7 @@ docs/                知识库
 
 - 节点 ID：`veda-sparse-attention`（`pyproject.toml` 的 `[project].name`，发布后不可修改）；
   发布者：`[tool.comfy].PublisherId`（必须与 registry.comfy.org 上的 publisher 一致）。
-- `.comfyignore` 排除测试、工具、文档等不需要分发的文件；分发内容 = 运行时代码 + 安装脚本 +
+- `.comfyignore` 排除测试、工具、文档等不需要分发的文件；分发内容 = 运行时代码 +
   示例工作流 + README / LICENSE / NOTICE。
 - **发布流程**：
   1. 在 main 上完成所有改动，CI 绿；涉及 GPU 的改动按 1.5 在对应硬件上验证。
@@ -207,8 +201,8 @@ git config core.hooksPath .githooks                # 启用泄漏检查
 COMFYUI_ROOT=<ComfyUI 路径> pytest tests/unit -q    # 提交前必跑（或把仓库放进 custom_nodes）
 ruff check .
 pytest tests/gpu -q                                 # GPU 机器上
-python install_fa4.py --check                       # 本机各后端自检
 python tools/bench_attention.py --latent-t 37       # 单层注意力测速
-python tools/fa4_upstream_diff.py --write           # 改完 fork 后刷新 provenance
+python tools/compare_int8.py                        # 精度对齐 ComfyUI 的 INT8
+python tools/probe_gpu_kernels.py                   # 硬件 / Triton / TMA 能力
 python tools/make_example_workflows.py              # 重新生成示例工作流
 ```

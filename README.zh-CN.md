@@ -26,27 +26,27 @@
 在自己的 H3 工作流里使用：把 **Veda Sparse Attention (MiniMax H3)** 接在模型加载和 LoRA 之后、
 guider / 采样器之前。对比效果：选中节点按 **Ctrl+B**（旁路），同一个 seed 就是全注意力。
 
-### 最快的 kernel（可选，只需一次）
+### Kernel
 
-| 机器 | 在 `custom_nodes/Veda-on-ComfyUI` 里运行 | Kernel |
-|---|---|---|
-| NVIDIA + Windows（便携版 / 桌面版） | 双击 `install_fa4.bat` | FlashAttention-4 |
-| NVIDIA + Linux（含 DGX Spark） | `./install_fa4.sh` | FlashAttention-4 |
-| Apple silicon | `./install_fa4.sh`（安装 MLX） | MLX |
+不用装任何东西。稀疏 kernel 跟节点一起发布：从 Comfy Registry 安装时会自动带上
+Triton（NVIDIA，SM80 及以上）或 MLX（Apple silicon）。
 
-不装也能用（FlexAttention 或 torch 的通用 kernel）。脚本不会改动你的 torch，最后会自检并打印每张卡
-将使用的 kernel。
+它用的就是 ComfyUI 自己做低精度注意力时用的那套 INT8 算术（`--use-sage-attention`），
+所以画质和在那边一样，只是多了 Veda 的稀疏。RTX 5070 上 104k token、90% 稀疏时，
+一层注意力 528 ms，全注意力是 11.8 s。
 
 ## 节点上显示什么
 
+节点上的文字会告诉你正在发生什么，例如
+
 ```
-✅ Veda done · FA4 (SM120)
+✅ Veda done · Triton INT8 (SM120)
 Video: 1344x768 · 5.2 s
 Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
 采样前显示将用的 kernel 和稀疏度；采样中显示视频尺寸和匹配到的训练方案；运行结束显示实际算了多少比例的
-全注意力。⚠ 开头的行表示回退了或者超出了训练范围（少见的尺寸、缺 kernel 等），后面写着原因。打开
+全注意力。⚠ 开头的行表示超出了训练范围（少见的尺寸）或这张卡上没有 kernel，后面写着原因。打开
 `verbose` 会额外显示各阶段耗时、注意力调用次数和打分器信息。
 
 ## 设置
@@ -59,7 +59,6 @@ Attention computed: 10.9% of full attention (89.1% skipped)
 | `reference_sparsity` | `90%` | 参考（reference）同上：首尾帧、引导帧、参考图和参考视频。`0%` 表示参考走全注意力。 |
 | `full_attention_layers` | 空 | 保持全注意力的 DiT 层，0 起，例如 `0, 1, 47-49`。 |
 | `full_attention_steps` | 空 | 保持全注意力的采样步，0 起，例如 `0`。 |
-| `backend` | auto | `fa4` / `flex` / `torch` / `mlx`；auto 选自检通过的最快那个。 |
 | `verbose` | 关 | 每次运行后在节点上额外显示各阶段耗时、调用次数和打分器信息。 |
 
 发布的打分器训练于 **1344x768、768x1344、768x768、1024x768，5 / 10 / 14 秒**，配 8 步 Turbo LoRA。
@@ -68,15 +67,17 @@ Attention computed: 10.9% of full attention (89.1% skipped)
 
 ## 硬件
 
-| 硬件 | Kernel | 状态 |
-|---|---|---|
-| RTX 30 / A100 / RTX 40 / L40（sm80–89） | fa4-sm80（打过补丁的 FA4） | 见 [docs/hardware.md](docs/hardware.md) |
-| H100 / H200（sm90） | fa4-sm90 | 见 docs/hardware.md |
-| B200 / B300（sm100 / sm103） | fa4-sm100 | 见 docs/hardware.md |
-| RTX 50、RTX PRO 6000 Blackwell（sm120） | fa4-sm120 | **已验证：RTX 5070 + Windows 11**（5 秒 16:9 T2VA，每步采样 2.5 倍） |
-| DGX Spark / GB10（sm121） | fa4-sm120 | 见 docs/hardware.md |
-| Apple silicon（M 系列） | mlx / torch | 已验证（M3 Pro） |
-| 其他 NVIDIA 显卡 | flex / torch | 通用 |
+| 硬件 | 状态 |
+|---|---|
+| RTX 30 / A100 / RTX 40 / L40（sm80–89） | 见 [docs/hardware.md](docs/hardware.md) |
+| H100 / H200（sm90） | 见 docs/hardware.md |
+| B200 / B300（sm100 / sm103） | 见 docs/hardware.md |
+| RTX 50、RTX PRO 6000 Blackwell（sm120） | **已验证：RTX 5070 + Windows 11**（5 秒 16:9 T2VA，每步采样 2.5 倍） |
+| DGX Spark / GB10（sm121） | 见 docs/hardware.md |
+| Apple silicon（M 系列） | 已验证（M3 Pro） |
+
+一个 Triton kernel 覆盖 SM80 起的所有 NVIDIA 显卡，Windows 和 Linux 都一样。更老的卡、
+ROCm 和 CPU 没有 kernel：节点会说明，模型跑自己的注意力。
 
 ## 常见问题
 

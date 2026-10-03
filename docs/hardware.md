@@ -3,28 +3,38 @@
 状态：✅ 在该硬件上跑过 `tests/gpu` 和测速；🧪 代码路径就绪、自检把关、尚未在该硬件上验证；
 — 不适用。
 
-| 硬件 | SM | 首选后端 | Windows | Linux | 备注 |
+| 硬件 | SM | kernel | Windows | Linux | 备注 |
 |---|---|---|---|---|---|
-| RTX 30（3090 等）、RTX A 系列 | sm86 | fa4-sm80 | 🧪 | 🧪 | Miowtion 的补丁声明覆盖 sm80/86/89，只在 4090 上验证过 |
-| A100 | sm80 | fa4-sm80 | — | 🧪 | |
-| RTX 40（4090 等）、L4 / L40、RTX 6000 Ada | sm89 | fa4-sm80 | 🧪 | 🧪 | Miowtion 在 4090 / Linux 上验证过同一份补丁 |
-| H100 / H200 | sm90 | fa4-sm90 | — | 🧪 | 上游 FA4 原生块稀疏 |
-| B200 / GB200、B300 | sm100 / sm103 | fa4-sm100 | — | 🧪 | q_stage 强制为 1，待验证 |
-| RTX 50（5090 等） | sm120 | fa4-sm120 | ✅（RTX 5070） | 🧪 | Windows 端到端验证见下 |
-| RTX PRO 6000 Blackwell | sm120 | fa4-sm120 | 🧪 | 🧪 | Miowtion 在 Linux 上验证过 SM120 前向 |
-| DGX Spark（GB10） | sm121 | fa4-sm120 | — | 🧪 | aarch64 + CUDA 13：install_fa4 装 cu13 的 CuTe DSL |
-| 其他 NVIDIA（无 FA4 时） | — | flex → torch | 🧪 | 🧪 | flex 需要 Triton（Windows：triton-windows） |
-| Apple silicon（M 系列） | — | mlx → torch | — | — | macOS ✅（M3 Pro） |
+| RTX 30（3090 等）、RTX A 系列 | sm86 | triton-int8 | 🧪 | 🧪 | |
+| A100 | sm80 | triton-int8 | — | 🧪 | |
+| RTX 40（4090 等）、L4 / L40、RTX 6000 Ada | sm89 | triton-int8 | 🧪 | 🧪 | |
+| H100 / H200 | sm90 | triton-int8 | — | 🧪 | TMA 可用（有 cluster），尚未利用 |
+| B200 / GB200、B300 | sm100 / sm103 | triton-int8 | — | 🧪 | 同上 |
+| RTX 50（5090 等） | sm120 | triton-int8 | ✅（RTX 5070） | 🧪 | TMA 只能 `.shared::cta`，`num_ctas` 必须为 1 |
+| RTX PRO 6000 Blackwell | sm120 | triton-int8 | 🧪 | 🧪 | |
+| DGX Spark（GB10） | sm121 | triton-int8 | — | 🧪 | aarch64 + CUDA 13 |
+| SM75 及以下 / ROCm / CPU | — | 无 | — | — | 节点让模型跑自己的注意力 |
+| Apple silicon（M 系列） | — | mlx | — | — | macOS ✅（M3 Pro） |
+
+一个 kernel 覆盖 SM80 起的所有 CUDA 卡，所以这张表现在是"验证到哪了"，不是"用哪个实现"。
 
 ## 验证记录
 
-- 2026-10-03，Apple M3 Pro（macOS 15），torch 2.14.1 + MLX 0.32.3：mlx / torch 后端在 CPU 与 MPS
-  自检通过，`tests/gpu` 3 passed / 2 skipped（无 CUDA）。`tools/bench_attention.py`（16:9，
-  latent_t 37，38 228 token，90% 稀疏，随机打分器，单层）：MPS SDPA 全注意力 9.29 s；mlx 后端
-  3.52 s（2.64x）；torch 后端 5.68 s（1.57x，与另一次 8.89 s 的全注意力相比）。kernel 级优化尚未
-  开始。
-- 2026-10-03，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，ComfyUI 0.38.0**，
-  CuTe DSL 4.8.0（Windows wheel），vendored FA4 4.0.0b32 + QuACK 0.6.5：
+- 2026-10-03，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，triton-windows
+  3.8.0**，`triton-int8`：
+  - `tests/gpu` 通过。`tools/compare_int8.py`（4096 token × 8 头 × 128，稠密）：对 fp32 参考
+    **1.344%**，与装机版 SageAttention 的 1.344% 相同，ComfyUI 的 INT8 模型 1.342%，
+    torch SDPA bf16 0.246%。带 padding 的自检用例上，与自身算术差 0.133%。
+  - `tools/bench_attention.py`（16:9，latent_t 102，104 484 token，90% 稀疏，随机打分器，单层）：
+    SDPA 全注意力 11 834 ms，Veda **528.2 ms/层（22.40x）**。同一问题上被它取代的 FA4 CuTe bf16
+    是 793.8 ms（14.91x），即 INT8 kernel 快 1.50 倍。
+  - 稠密吞吐参照：SageAttention INT8 125 TFLOPS，torch SDPA bf16 26 TFLOPS（Windows 版 torch
+    的 SDPA 走不了 flash，这个基线偏慢）。
+- 2026-10-03，Apple M3 Pro（macOS 15），torch 2.14.1 + MLX 0.32.3：mlx 后端在 MPS 自检通过。
+  `tools/bench_attention.py`（16:9，latent_t 37，38 228 token，90% 稀疏，随机打分器，单层）：
+  MPS SDPA 全注意力 9.29 s；mlx 后端 3.52 s（2.64x）。
+- 2026-10-03，RTX 5070（SM120），Windows 11，ComfyUI 0.38.0 — **下面这组是被 `triton-int8`
+  取代之前的 FA4 CuTe bf16 数据**，保留作为对照：
   - `tests/unit` 79 passed / 1 skipped（MLX）；`install_fa4.bat` 安装后自检选中 fa4-sm120；
     `tests/gpu` 3 passed / 2 skipped（MLX；flex 缺 Triton）。FA4 首次编译约 6 s。
   - `tools/bench_attention.py`（单层，随机打分器，90%）：16:9 5.2 s（38k token）SDPA 1577 ms、

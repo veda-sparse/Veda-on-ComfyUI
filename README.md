@@ -40,32 +40,32 @@ H3)** after the model loader and LoRA loaders, right before the guider /
 sampler. To compare, select it and press **Ctrl+B** (bypass): same seed,
 full attention.
 
-### Fastest kernels (optional, once)
+### Kernels
 
-| Your machine | Run (in `custom_nodes/Veda-on-ComfyUI`) | Kernel |
-|---|---|---|
-| NVIDIA, Windows (portable / Desktop) | double-click `install_fa4.bat` | FlashAttention-4 |
-| NVIDIA, Linux (incl. DGX Spark) | `./install_fa4.sh` | FlashAttention-4 |
-| Apple silicon | `./install_fa4.sh` (installs MLX) | MLX |
+Nothing to install. The sparse kernel ships with the node: installing from
+the Comfy Registry pulls in Triton (NVIDIA, SM80 and newer) or MLX (Apple
+silicon) automatically.
 
-Without them Veda still works with portable kernels (FlexAttention or torch).
-The scripts never touch your torch install and end with a self-test that
-prints which kernel each GPU will use.
+It is the same INT8 arithmetic ComfyUI itself uses for low-precision
+attention (`--use-sage-attention`), so the quality is what you would get
+there, with Veda's sparsity on top. On an RTX 5070 at 104k tokens and 90%
+sparsity, one attention layer takes 528 ms against 11.8 s for full
+attention.
 
 ## What the node shows
 
 The text on the node tells you what is happening, e.g.
 
 ```
-✅ Veda done · FA4 (SM120)
+✅ Veda done · Triton INT8 (SM120)
 Video: 1344x768 · 5.2 s
 Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
 Before sampling it shows the kernel it will use and the sparsity; while
 sampling, the video size and which trained tile plan it matched. A ⚠ line
-means Veda fell back or is outside what it was trained on (an unusual size,
-a missing kernel), with the reason. Turn on `verbose` for timing per phase,
+means Veda is outside what it was trained on (an unusual size) or has no
+kernel on this GPU, with the reason. Turn on `verbose` for timing per phase,
 attention calls and predictor details.
 
 ## Settings
@@ -79,7 +79,6 @@ input (click "show advanced inputs") with the trained defaults:
 | `reference_sparsity` | `90%` | The same for references: first/last frames, guide frames, reference images and videos. `0%` = references use full attention. |
 | `full_attention_layers` | empty | 0-based DiT blocks that keep full attention, e.g. `0, 1, 47-49`. |
 | `full_attention_steps` | empty | 0-based sampling steps that keep full attention, e.g. `0`. |
-| `backend` | auto | `fa4`, `flex`, `torch`, `mlx`; auto takes the fastest that passes its self-test. |
 | `verbose` | off | After each run, also show attention time per phase, call counts and predictor details on the node. |
 
 The released predictor was trained for **1344x768, 768x1344, 768x768 and
@@ -90,18 +89,18 @@ so check the result against full attention (bypass).
 
 ## Hardware
 
-| Hardware | Kernel | Status |
-|---|---|---|
-| RTX 30 / A100 / RTX 40 / L40 (sm80-89) | fa4-sm80 (patched FA4) | see [docs/hardware.md](docs/hardware.md) |
-| H100 / H200 (sm90) | fa4-sm90 | see [docs/hardware.md](docs/hardware.md) |
-| B200 / B300 (sm100 / sm103) | fa4-sm100 | see [docs/hardware.md](docs/hardware.md) |
-| RTX 50, RTX PRO 6000 Blackwell (sm120) | fa4-sm120 | **tested: RTX 5070, Windows 11** (2.5x per sampling step, 5 s 16:9 T2VA) |
-| DGX Spark / GB10 (sm121) | fa4-sm120 | see [docs/hardware.md](docs/hardware.md) |
-| Apple silicon (M series) | mlx / torch | tested (M3 Pro) |
-| any other NVIDIA GPU | flex / torch | portable |
+| Hardware | Status |
+|---|---|
+| RTX 30 / A100 / RTX 40 / L40 (sm80-89) | see [docs/hardware.md](docs/hardware.md) |
+| H100 / H200 (sm90) | see [docs/hardware.md](docs/hardware.md) |
+| B200 / B300 (sm100 / sm103) | see [docs/hardware.md](docs/hardware.md) |
+| RTX 50, RTX PRO 6000 Blackwell (sm120) | **tested: RTX 5070, Windows 11** (2.5x per sampling step, 5 s 16:9 T2VA) |
+| DGX Spark / GB10 (sm121) | see [docs/hardware.md](docs/hardware.md) |
+| Apple silicon (M series) | tested (M3 Pro) |
 
-Windows and Linux are both supported; the FA4 copy shipped here is patched
-to import on Windows.
+One Triton kernel covers every NVIDIA GPU from SM80 on, Windows and Linux
+alike. Older cards, ROCm and CPU have no kernel: the node says so and the
+model runs its own attention.
 
 ## FAQ
 

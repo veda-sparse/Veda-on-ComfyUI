@@ -51,7 +51,8 @@
 | `full_attention_steps` | 0 起的采样步下标。第 i 步覆盖 `sample_sigmas[i] >= sigma > sample_sigmas[i+1]`，所以多阶段采样器的中间求值也算在第 i 步。 |
 | `verbose` | 运行结束后节点上额外显示诊断信息：Veda 注意力总耗时、每次模型调用的耗时、各阶段（gather / score / select / kernel / scatter）耗时（CUDA event 计时）、保留的 video tile 比例、调用次数与全注意力原因、打分器信息。 |
 
-尺寸没有完全匹配的训练方案时，固定使用纵横比最接近、其次时长最接近的方案（含 H/W 转置），并在节点上标 ⚠。
+尺寸没有完全匹配的训练方案时，固定使用纵横比最接近、其次时长最接近的方案（含 H/W 转置），节点上的
+「Tile plan」一行会写成 `nearest trained size: ...`，用措辞而不是图标说明这次不在训练分布内。
 
 **节点文字**（`send_progress_text`，多行）：就绪时显示 kernel（大写的正式名，如 `Triton INT8 (SM120)`）和稀疏度；
 第一次稀疏调用时显示视频尺寸 / 时长和匹配的方案；运行结束显示"实际计算了全注意力的百分之多少"——按 128x128

@@ -200,9 +200,9 @@ def test_node_text_reports_sparsity_not_call_counts(h3, bundle, verbose):
     _forward(h3, 't2va', patch)
     patch.on_cleanup()
     running, summary = shown[0], shown[-1]
-    assert running.startswith('⚡ Veda running · reference (fp32)')
+    assert running.startswith('Veda running · reference (fp32)')
     assert 'Video: 448x256' in running and 'Sparsity: generated 90%' in running
-    assert summary.startswith('✅ Veda done · reference (fp32)')
+    assert summary.startswith('Veda done · reference (fp32)')
     assert '% of full attention' in summary
     assert ('Attention calls' in summary) == verbose
     assert 'sparse /' not in summary

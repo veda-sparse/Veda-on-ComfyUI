@@ -67,7 +67,7 @@ def _predictor_path(name: str, node_id: str | None) -> str:
         raise ValueError(f'Predictor {name!r} is not in models/{FOLDER}. '
                          'Pick another file or put it there.')
     status = veda_status.NodeStatus(node_id)
-    status.show(f'⬇ downloading {name} ({known.size / 2**20:.0f} MB, once)')
+    status.show(f'Downloading {name} ({known.size / 2**20:.0f} MB, once)')
     bar = comfy.utils.ProgressBar(known.size, node_id=node_id)
     folder = folder_paths.get_folder_paths(FOLDER)[0]
     path = downloads.fetch(known, folder,
@@ -125,13 +125,11 @@ class VedaSparseAttention(io.ComfyNode):
             search_aliases=['veda', 'sparse attention', 'minimax h3 speed',
                             'accelerate', 'faster video'],
             description=(
-                'Replaces MiniMax-H3 self-attention (T2VA / FL2VA / R2VA) '
-                'with Veda learned block-sparse attention: a trained '
-                'predictor marks the attention tiles that matter and only '
-                'those are computed (90% sparse by default). This is an '
-                'attention override, so put it on the MODEL wire after the '
-                'model and any LoRA loaders, last before the sampler or '
-                'guider. Bypass it to compare against full attention.'),
+                'Speeds up MiniMax-H3 (T2VA / FL2VA / R2VA) by computing '
+                'only the attention tiles a learned predictor marks as '
+                'important. This is an attention override, so put it on '
+                'the MODEL wire after the model and any LoRA loaders, last '
+                'before the sampler or guider.'),
             inputs=[
                 io.Model.Input('model', tooltip='The MiniMax-H3 model to '
                                'patch (after any LoRA loaders).'),
@@ -222,7 +220,7 @@ class VedaSparseAttention(io.ComfyNode):
             lines += [f'  {name}: {error or "available"}'
                       for name, _, error in probe]
         if _other_sparse_node(model):
-            status.warn('⚠ ComfyUI\'s "Model Sparse Attention" node is also '
+            status.warn('ComfyUI\'s "Model Sparse Attention" node is also '
                         'applied; on H3 it replaces the attention blocks, so '
                         'Veda would not run. Remove one of the two.')
         else:

@@ -20,8 +20,10 @@ class NodeStatus:
         self._last = None
 
     def show(self, text: str, level: int = logging.INFO) -> None:
-        # The node shows the text as is; the log gets plain ASCII, because
-        # Windows consoles and log files may not be UTF-8.
+        # Status text carries no emoji, so the only non-ASCII left is the
+        # ' · ' separator; the log still gets plain ASCII, because Windows
+        # consoles and log files may not be UTF-8. The strip stays as the
+        # backstop that keeps that promise whatever a caller passes in.
         plain = text.replace(' · ', ' | ').encode('ascii', 'ignore')
         plain = plain.decode().strip()
         _LOG.log(level, 'Veda: %s', plain)

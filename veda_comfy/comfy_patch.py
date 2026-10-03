@@ -91,10 +91,10 @@ class VedaPatch:
         if key not in self._engines:
             resolution = backends.resolve(
                 device,
-                notify=lambda text: self.status.show(f'⏳ Veda: {text}'))
+                notify=self.status.show)
             if resolution.backend is None:
                 self.status.warn(
-                    f'⚠ Veda off: no sparse kernel works on '
+                    f'Veda off: no sparse kernel works on '
                     f'{resolution.device.label}; using full attention\n'
                     f'{resolution.report()}')
                 self._engines[key] = None
@@ -168,7 +168,7 @@ class VedaPatch:
                 patch.run.failed = f'{type(error).__name__}: {error}'
                 logging.error('Veda: sparse attention failed', exc_info=True)
                 patch.status.warn(
-                    '⚠ Veda hit an error and finishes this run with full '
+                    'Veda hit an error and finishes this run with full '
                     f'attention:\n{patch.run.failed}')
                 return dense('error')
 
@@ -184,7 +184,7 @@ class VedaPatch:
             return 'layer outside the predictor'
         if q.shape[1] != bundle.num_heads or q.shape[3] != bundle.head_dim:
             self._announce(('shape', tuple(q.shape)),
-                           f'⚠ Veda off: the model has {q.shape[1]} heads of '
+                           f'Veda off: the model has {q.shape[1]} heads of '
                            f'dim {q.shape[3]}, the predictor expects '
                            f'{bundle.num_heads} x {bundle.head_dim}',
                            warn=True)
@@ -212,7 +212,7 @@ class VedaPatch:
             spec = engine.layout_spec(layout)
         except h3_layout.LayoutError as error:
             self._announce(('layout', str(error)),
-                           f'⚠ Veda off for this video: cannot read the H3 '
+                           f'Veda off for this video: cannot read the H3 '
                            f'layout ({error})', warn=True)
             return dense('layout')
         choice = engine.plan_for(spec)
@@ -232,10 +232,9 @@ class VedaPatch:
     # -- node text ---------------------------------------------------------
 
     def _running_text(self, engine, spec, choice) -> str:
-        lines = [f'⚡ Veda running · {engine.backend.display}',
+        lines = [f'Veda running · {engine.backend.display}',
                  f'Video: {veda_plans.describe_grid(spec.target.grid)}',
-                 'Tile plan: ' + (choice.how if choice.exact
-                                  else f'⚠ {choice.how}')]
+                 f'Tile plan: {choice.how}']
         lines.append(f'Sparsity: {self.settings.describe()}')
         if spec.references:
             count = len(spec.references)
@@ -260,8 +259,9 @@ class VedaPatch:
         if not sparse and not full:
             return None
         backend = engines[0].backend.display if engines else 'full attention'
-        mark = '✅' if sparse and not run.failed else '⚠'
-        lines = [f'{mark} Veda done · {backend}']
+        headline = ('Veda done' if sparse and not run.failed
+                    else 'Veda done, fell back to full attention')
+        lines = [f'{headline} · {backend}']
         if run.video:
             lines.append(f'Video: {run.video}')
         work = [e.stats.compute_fraction() for e in engines]
@@ -282,7 +282,7 @@ class VedaPatch:
         return '\n'.join(lines)
 
     def _diagnostics(self, engines) -> list[str]:
-        run, lines = self.run, ['— diagnostics —']
+        run, lines = self.run, ['-- diagnostics --']
         for key, timer in self._timers.items():
             phases = timer.summary()
             total = sum(phases.values()) / 1000.0

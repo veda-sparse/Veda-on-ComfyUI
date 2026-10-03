@@ -40,14 +40,15 @@ Triton（NVIDIA，SM80 及以上）或 MLX（Apple silicon）。
 节点上的文字会告诉你正在发生什么，例如
 
 ```
-✅ Veda done · Triton INT8 (SM120)
+Veda done · Triton INT8 (SM120)
 Video: 1344x768 · 5.2 s
 Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
 采样前显示将用的 kernel 和稀疏度；采样中显示视频尺寸和匹配到的训练方案；运行结束显示实际算了多少比例的
-全注意力。⚠ 开头的行表示超出了训练范围（少见的尺寸）或这张卡上没有 kernel，后面写着原因。打开
-`verbose` 会额外显示各阶段耗时、注意力调用次数和打分器信息。
+全注意力。`Veda off` 开头的行表示这张卡上没有 kernel 或布局读不懂，后面写着原因；超出训练范围时
+「Tile plan」一行会写成 `nearest trained size: ...`。打开 `verbose` 会额外显示各阶段耗时、
+注意力调用次数和打分器信息。
 
 ## 设置
 

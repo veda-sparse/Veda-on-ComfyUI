@@ -57,16 +57,17 @@ attention.
 The text on the node tells you what is happening, e.g.
 
 ```
-✅ Veda done · Triton INT8 (SM120)
+Veda done · Triton INT8 (SM120)
 Video: 1344x768 · 5.2 s
 Attention computed: 10.9% of full attention (89.1% skipped)
 ```
 
 Before sampling it shows the kernel it will use and the sparsity; while
-sampling, the video size and which trained tile plan it matched. A ⚠ line
-means Veda is outside what it was trained on (an unusual size) or has no
-kernel on this GPU, with the reason. Turn on `verbose` for timing per phase,
-attention calls and predictor details.
+sampling, the video size and which trained tile plan it matched. A line
+starting `Veda off` means there is no kernel on this GPU or the layout could
+not be read, with the reason; the tile plan line reads `nearest trained
+size: ...` when the video is outside what the predictor was trained on. Turn
+on `verbose` for timing per phase, attention calls and predictor details.
 
 ## Settings
 

@@ -247,6 +247,10 @@ class FlashAttentionForwardBase:
         sQ_layout_atom, sK_layout_atom, sV_layout_atom, sO_layout_atom, sP_layout_atom = (
             self._get_smem_layout_atom()
         )
+
+        def atom_k_block(atom):
+            # Swizzled atoms are composed layouts; plain ones are not.
+            return (atom.outer if hasattr(atom, "outer") else atom).shape[1]
         self.sQ_layout = cute.tile_to_shape(
             sQ_layout_atom,
             (self.tile_m, self.tile_hdim),
@@ -296,7 +300,7 @@ class FlashAttentionForwardBase:
             num_bits_per_copy=universal_copy_bits,
         )
         # tQ_layout and tK_layout: thread layout for QK load
-        tQK_shape_dim_1 = sQ_layout_atom.outer.shape[1] // async_copy_elems
+        tQK_shape_dim_1 = atom_k_block(sQ_layout_atom) // async_copy_elems
         assert self.num_Q_load_threads % tQK_shape_dim_1 == 0, (
             "num_threads must be divisible by tQK_shape_dim_1"
         )
@@ -313,13 +317,13 @@ class FlashAttentionForwardBase:
         )
         # So that we don't have to check if we overshoot kBlockM when we load Q
         assert self.tile_m % tQ_layout.shape[0] == 0
-        tV_shape_dim_1 = sV_layout_atom.outer.shape[1] // async_copy_elems
+        tV_shape_dim_1 = atom_k_block(sV_layout_atom) // async_copy_elems
         tV_layout = cute.make_ordered_layout(
             (self.num_producer_threads // tV_shape_dim_1, tV_shape_dim_1),
             order=(1, 0),
         )
         # O has its own layout whenever its dtype differs from V's.
-        tO_shape_dim_1 = sO_layout_atom.outer.shape[1] // copy_elems_O
+        tO_shape_dim_1 = atom_k_block(sO_layout_atom) // copy_elems_O
         tO_layout = cute.make_ordered_layout(
             (self.num_epilogue_threads // tO_shape_dim_1, tO_shape_dim_1),
             order=(1, 0),
@@ -617,7 +621,31 @@ class FlashAttentionForwardBase:
 
 
 class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+    @staticmethod
+    def _plain_layout_atom(dtype, k_dim):
+        """Unswizzled smem atom for 1-byte operands.
+
+        The 8-bit ldmatrix atoms reject a composed (swizzled) source, so
+        FP8 operands get a plain row-major tile. Reads are then free of
+        the swizzle's conflict avoidance, which is a throughput question,
+        not a correctness one.
+        """
+        elems_per_128b = 128 // (dtype.width // 8)
+        k_block = k_dim if k_dim <= elems_per_128b else elems_per_128b
+        return cute.make_ordered_layout((8, k_block), order=(1, 0))
+
     def _get_smem_layout_atom(self):
+        if self.dtype.width == 8:
+            sQ_layout_atom = self._plain_layout_atom(self.dtype, self.tile_hdim)
+            sK_layout_atom = sQ_layout_atom
+            sV_layout_atom = self._plain_layout_atom(self.dtype, self.tile_hdimv)
+            return (
+                sQ_layout_atom,
+                sK_layout_atom,
+                sV_layout_atom,
+                sm80_utils.get_smem_layout_atom(self.out_dtype, self.tile_hdimv),
+                None,
+            )
         sQ_layout_atom = sm80_utils.get_smem_layout_atom(self.dtype, self.tile_hdim)
         sK_layout_atom = sQ_layout_atom
         sV_layout_atom = sm80_utils.get_smem_layout_atom(self.dtype, self.tile_hdimv)
@@ -965,25 +993,18 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             # ///////////////////////////////////////////////////////////////////////////////
             # Smem copy atom tiling
             # ///////////////////////////////////////////////////////////////////////////////
-            # ldmatrix comes in a 16-bit and an 8-bit flavour; the 8-bit
-            # transposing variant is what lets the FP8 PV gemm read V from
-            # the same (tile_n, head_dim_v) smem tile as the 16-bit path.
+            # ldmatrix has a 16-bit and an 8-bit family and the operand
+            # type picks the family: building a 16-bit op over a 1-byte
+            # element does not lower to ldsm at all, it degrades to a copy
+            # that cannot read a swizzled tile.
             if const_expr(self.dtype.width == 8):
                 qk_ld_op = warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4)
-                # The transposing 8-bit ldmatrix wants a 128-bit aligned
-                # source, which a transposed view of a 1-byte tile cannot
-                # give. V therefore goes through a universal copy: more
-                # instructions for the load, but the MMA stays FP8.
-                smem_copy_atom_V = cute.make_copy_atom(
-                    cute.nvgpu.CopyUniversalOp(), self.dtype
-                )
+                v_ld_op = warp.LdMatrix16x16x8bOp(transpose=True, num_matrices=2)
             else:
                 qk_ld_op = warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4)
-                smem_copy_atom_V = cute.make_copy_atom(
-                    warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4),
-                    self.dtype,
-                )
+                v_ld_op = warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4)
             smem_copy_atom_QK = cute.make_copy_atom(qk_ld_op, self.dtype)
+            smem_copy_atom_V = cute.make_copy_atom(v_ld_op, self.dtype)
             smem_thr_copy_Q = utils.make_tiled_copy_A(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_K = utils.make_tiled_copy_B(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_V = utils.make_tiled_copy_B(smem_copy_atom_V, tiled_mma_pv).get_slice(tidx)

@@ -88,18 +88,18 @@ UPSTREAM_SHA256 = {
         'ad2d802c97dbf654fd03724bcfa91702b18acec8518e5dd4a33f137ba238bf7d',
 }
 PATCHED_SHA256 = {
-    'block_sparsity.py':
-        '9b539633f15a8475c873dfff30ee7090144b466cc6bed4665c6149c0c7d66cdf',
     'block_sparse_utils.py':
         '69b7a955e7a7cb756b0b475241e771feba7497670b570dd5ddb279e2b51ac7ad',
-    'flash_fwd.py':
-        '6ee2d9dfa3be5e79a1139d2425e10cf33e89a36b092e7120555a3ede3f66d10b',
+    'block_sparsity.py':
+        '9b539633f15a8475c873dfff30ee7090144b466cc6bed4665c6149c0c7d66cdf',
     'flash_bwd.py':
         '0d7fffb59e3013d0e24172f7c897f9a0fec71549c62ed1b1b29e19358b33038c',
-    'interface.py':
-        '38d9a337f7ab266203b1cd7db26dc3603b63c6235c09e0a9d58727d2bc63294d',
+    'flash_fwd.py':
+        '72d6c79c14ba6cdd906893175985e6e8661870775f046d04af08338bf71a081c',
     'flash_fwd_sm120.py':
         'a3f0b2dcbe727b256555be25c04aada7e87a0ecf996bd6e4e8e949bfb5939719',
+    'interface.py':
+        '38d9a337f7ab266203b1cd7db26dc3603b63c6235c09e0a9d58727d2bc63294d',
 }
 
 _OPTIONAL_FCNTL = ('try:\n'
@@ -216,6 +216,32 @@ def _apply_patches(files: dict[str, bytes],
             if _sha256(patched[rel]) != digest:
                 sys.exit(f'patched {rel} differs from the pinned result')
     return patched
+
+
+def update_hashes(fa4_wheel: str | None) -> None:
+    """Rewrites PATCHED_SHA256 in this file from the current patches.
+
+    Editing those digests by hand is how a stale vendored copy sneaks in:
+    generate() then exits, and anything that hid its stderr kept building
+    against the previous kernel.
+    """
+    files, _ = _unzip(_download(FA4_WHEEL, FA4_WHEEL_SHA256, fa4_wheel,
+                                'FA4'), 'flash_attn/cute/')
+    patched = _apply_patches(files, verify=False)
+    changed = {rel: _sha256(data) for rel, data in patched.items()
+               if data != files[rel]}
+    path = os.path.abspath(__file__)
+    with open(path, encoding='utf-8') as f:
+        source = f.read()
+    start = source.index('PATCHED_SHA256 = {')
+    end = source.index('}', start) + 1
+    body = ''.join(f"    {rel!r}:\n        {digest!r},\n"
+                   for rel, digest in sorted(changed.items()))
+    source = source[:start] + 'PATCHED_SHA256 = {\n' + body + '}' + source[end:]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(source)
+    print(f'PATCHED_SHA256 now pins {len(changed)} files: '
+          f'{", ".join(sorted(changed))}')
 
 
 def work_dir(path: str, fa4_wheel: str | None) -> None:
@@ -377,8 +403,13 @@ def main() -> None:
     parser.add_argument('--wheel', help='local FA4 wheel (else download)')
     parser.add_argument('--work-dir',
                         help='lay out the patched FA4 tree here for editing')
+    parser.add_argument('--update-hashes', action='store_true',
+                        help='rewrite PATCHED_SHA256 from the patch series')
     parser.add_argument('--quack-wheel', help='local QuACK wheel')
     args = parser.parse_args()
+    if args.update_hashes:
+        update_hashes(args.wheel)
+        return
     if args.work_dir:
         work_dir(args.work_dir, args.wheel)
         return

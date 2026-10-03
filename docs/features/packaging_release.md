@@ -43,11 +43,24 @@
 - **CI**（`.github/workflows/tests.yml`）：Linux / Windows / macOS 上安装 ComfyUI v0.38.2 +
   CPU torch，跑 `ruff` 与 `tests/unit`（含 ComfyUI 集成测试）。
 - **发布**（`.github/workflows/publish_action.yml`）：main 上 `pyproject.toml` 变化时用 secret
-  `REGISTRY_ACCESS_TOKEN` 发布（流程见 AGENTS.md 第 4 节）。
+  `REGISTRY_ACCESS_TOKEN` 发布（流程见 AGENTS.md 第 4 节）。两个必须记住的点见下面的踩坑记录：
+  workflow 里写了 `permissions:` 就必须把 `contents: read` 也写上；触发条件是整个
+  `pyproject.toml`，所以 job 里自己再比一次版本号。
 
 ## 踩坑记录
 
 - **Registry 的 Icon 最大 400x400**：图标 SVG 的 width/height 设为 400（viewBox 不变）。
+- **`permissions:` 里漏了 `contents: read`，checkout 自己的仓库报 "Repository not found"**：
+  GitHub Actions 里只要声明了 `permissions` 块，没列出的 scope 全部变成 `none`。
+  `publish_action.yml` 当时只写了 `issues: write`（publish-node-action 失败时要开 issue），
+  于是默认 token 没有 `contents` 权限，`actions/checkout` 连本仓库都读不到——而且报的是
+  "Repository not found"，看起来像仓库名写错或者私有仓库没权限，跟真正的原因差很远。
+  `tests.yml` 没有声明 `permissions`，拿的是默认的读权限，所以只有发布这条挂。
+  对策：声明权限时把需要的都写全。
+- **发布触发的是"`pyproject.toml` 变了"，不是"版本号变了"**：改一行 description 或者加一个
+  依赖都会触发一次发布，去发一个 registry 里已经存在的版本。对策：job 里用
+  `git show HEAD~1:pyproject.toml` 比一次 `version`，不一样才往下走（`fetch-depth: 2`）；
+  `workflow_dispatch` 手动触发时不比。
 
 ## 待办
 

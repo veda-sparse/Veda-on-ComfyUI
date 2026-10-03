@@ -96,6 +96,10 @@ class FlashAttentionForwardBase:
         # have different element types, which the O smem tile, its gmem
         # copy and the epilogue all have to account for.
         self.out_dtype = cutlass.BFloat16 if dtype.width == 8 else dtype
+        # FP8's PV gemm needs V with the contraction dim contiguous, and no
+        # ldmatrix transposes 1-byte elements on the way in. V therefore
+        # arrives already transposed, as (head_dim_v, seqlen_k).
+        self.v_transposed = dtype.width == 8
         # padding head_dim to a multiple of 16 as k_block_size
         hdim_multiple_of = 16
         self.tile_hdim = int(math.ceil(head_dim / hdim_multiple_of) * hdim_multiple_of)
@@ -264,7 +268,9 @@ class FlashAttentionForwardBase:
         )
         self.sV_layout = cute.tile_to_shape(
             sV_layout_atom,
-            (self.tile_n, self.tile_hdimv, self.num_stages),
+            (self.tile_hdimv, self.tile_n, self.num_stages)
+            if self.v_transposed
+            else (self.tile_n, self.tile_hdimv, self.num_stages),
             (0, 1, 2),
         )
         self.sO_layout = cute.tile_to_shape(
@@ -639,7 +645,8 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         if self.dtype.width == 8:
             sQ_layout_atom = self._plain_layout_atom(self.dtype, self.tile_hdim)
             sK_layout_atom = sQ_layout_atom
-            sV_layout_atom = self._plain_layout_atom(self.dtype, self.tile_hdimv)
+            # V is transposed: its contiguous dim is tile_n, not head_dim_v.
+            sV_layout_atom = self._plain_layout_atom(self.dtype, self.tile_n)
             return (
                 sQ_layout_atom,
                 sK_layout_atom,
@@ -823,7 +830,8 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             num_splits=1,
             seqlen_k=0,
             headdim=mQ.shape[1],
-            headdim_v=mV.shape[1],
+            # mV is (head_dim_v, seqlen_k, ...) when V arrives transposed.
+            headdim_v=mV.shape[0] if const_expr(self.v_transposed) else mV.shape[1],
             total_q=cute.size(mQ.shape[0])
             if const_expr(mCuSeqlensQ is not None)
             else cute.size(mQ.shape[0]) * cute.size(mQ.shape[3]),
@@ -953,7 +961,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             # ///////////////////////////////////////////////////////////////////////////////
             blkQ_shape = (self.tile_m, self.tile_hdim)
             blkK_shape = (self.tile_n, self.tile_hdim)
-            blkV_shape = (self.tile_n, self.tile_hdimv)
+            blkV_shape = (
+                (self.tile_hdimv, self.tile_n) if const_expr(self.v_transposed)
+                else (self.tile_n, self.tile_hdimv)
+            )
             num_head_kv = num_head if const_expr(self.pack_gqa) else num_head // self.qhead_per_kvhead
             mQ_cur = seqlen.offset_batch_Q(mQ, batch_size, dim=3)[None, None, num_head]
             if const_expr(not seqlen.has_cu_seqlens_k):
@@ -965,7 +976,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             if const_expr(not self.pack_gqa):
                 gQ = cute.local_tile(mQ_cur, blkQ_shape, (m_block, 0))
             gK = cute.local_tile(mK_cur, blkK_shape, (None, 0))
-            gV = cute.local_tile(mV_cur, blkV_shape, (None, 0))
+            gV = cute.local_tile(
+                mV_cur, blkV_shape,
+                (0, None) if const_expr(self.v_transposed) else (None, 0),
+            )
 
             # ///////////////////////////////////////////////////////////////////////////////
             # Get shared memory buffer
@@ -978,8 +992,9 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
                 sV = storage.sV.get_tensor(sV_layout)
             else:
                 sV = cute.make_tensor(cute.recast_ptr(sQ.iterator, dtype=self.dtype), sV_layout)
-            # Transpose view of V to tensor with layout (head_dim_v, tile_n) for tiled mma
-            sVt = layout_utils.transpose_view(sV)
+            # The tiled mma wants V as (head_dim_v, tile_n); a transposed V
+            # already is one, otherwise take a transposed view.
+            sVt = sV if const_expr(self.v_transposed) else layout_utils.transpose_view(sV)
 
             gmem_thr_copy_K = gmem_tiled_copy_K.get_slice(tidx)
             gmem_thr_copy_V = gmem_tiled_copy_V.get_slice(tidx)
@@ -1012,14 +1027,11 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
                     warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4),
                     self.dtype,
                 )
-                # No transposing ldmatrix can read V here: with 1-byte
-                # elements the 16 values a thread needs lie down a column
-                # of the tile, so the instruction's 16 contiguous bytes do
-                # not exist. A universal copy has no such requirement, and
-                # the FP8 tile is unswizzled, which is the other thing it
-                # insists on.
+                # V arrives transposed, so it reads like Q and K do:
+                # contraction dim contiguous, no transpose in the load.
                 smem_copy_atom_V = cute.make_copy_atom(
-                    cute.nvgpu.CopyUniversalOp(), self.dtype
+                    warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4),
+                    self.dtype,
                 )
             else:
                 smem_copy_atom_QK = cute.make_copy_atom(
@@ -1050,7 +1062,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
                 tVcV = tKcK
                 t0VcV = t0KcK
             else:
-                cV = cute.make_identity_tensor((self.tile_n, self.tile_hdimv))
+                cV = cute.make_identity_tensor(
+                    (self.tile_hdimv, self.tile_n) if const_expr(self.v_transposed)
+                    else (self.tile_n, self.tile_hdimv)
+                )
                 tVcV = gmem_thr_copy_V.partition_S(cV)
                 t0VcV = gmem_thr_copy_V.get_slice(0).partition_S(cV)
             # Allocate predicate tensors for m and n, here we only allocate the tile of k, and

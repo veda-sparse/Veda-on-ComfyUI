@@ -105,10 +105,14 @@ class Fa4Sm120Backend(base.Backend):
             q, q_s = _to_fp8(q)
             k, k_s = _to_fp8(k)
             v, v_scale = _to_fp8(v)
+            # The FP8 PV gemm reads V with the contraction dim contiguous,
+            # so hand the kernel (head_dim_v, slots) per head.
+            v = v.permute(2, 1, 0).contiguous()[None]
             scale *= q_s * k_s
         with _CALL_LOCK, torch.no_grad():
             out = interface.flash_attn_func(
-                q[None], k[None], v[None], softmax_scale=scale,
+                q[None], k[None], v if self.fp8 else v[None],
+                softmax_scale=scale,
                 mask_mod=_valid_key_mask_mod(),
                 aux_tensors=[layout.slot_valid],
                 block_sparse_tensors=tensors)

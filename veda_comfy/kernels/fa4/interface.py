@@ -771,10 +771,22 @@ def _flash_attn_fwd(
         seqlen_k = v.shape[-3]
     num_head_kv = v.shape[-2]
     head_dim_v = v.shape[-1]
+    # FP8's PV gemm reads V with the contraction dim contiguous, so V comes
+    # in transposed: (batch, head_dim_v, head, seqlen_k). Nothing else about
+    # the call changes; the kernel derives the same thing from the dtype.
+    v_transposed = v.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+    if v_transposed:
+        assert cu_seqlens_k is None and page_table is None, (
+            "transposed FP8 V supports neither varlen nor paged KV"
+        )
+        head_dim_v, seqlen_k = v.shape[-3], v.shape[-1]
     if cu_seqlens_k is None:
         if page_table is None:
             assert k is None or k.shape == (batch_size, seqlen_k, num_head_kv, head_dim)
-            assert v.shape == (batch_size, seqlen_k, num_head_kv, head_dim_v)
+            assert v.shape == (
+                (batch_size, head_dim_v, num_head_kv, seqlen_k) if v_transposed
+                else (batch_size, seqlen_k, num_head_kv, head_dim_v)
+            )
         else:
             assert k is None or k.shape == (num_pages, page_size, num_head_kv, head_dim)
             assert v.shape == (num_pages, page_size, num_head_kv, head_dim_v)

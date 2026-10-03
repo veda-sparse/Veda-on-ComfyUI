@@ -20,6 +20,22 @@
 - **Comfy Registry**：`pyproject.toml` 的 `[project]`（name `veda-sparse-attention`、version、
   license、classifiers）和 `[tool.comfy]`（PublisherId、DisplayName、Icon、
   `requires-comfyui >= 0.38.0`）。`.comfyignore` 排除 tests / tools / docs 等。
+  对着 registry 的字段规范核过一遍（2026-10-03）：
+  - `name` 要求 < 100 字符、只含字母数字和 `-_.`、不能以数字或符号开头、不区分大小写比较，
+    官方还建议名字里别带 "ComfyUI"。`veda-sparse-attention` 全部满足，**发布后不可改**。
+  - `license` 只接受表形式（`{ file = "LICENSE" }` 或 `{ text = ... }`），写成裸字符串会被判错。
+  - `Icon` 上限 400x400 且应为正方形：`assets/icon.svg` 的 width/height 是 400，viewBox 仍是
+    512 不动。还有一个可选的 `Banner`，要求 21:9，目前没做。
+  - `requires-comfyui` 支持 `>= <= ~= != <>` 和区间。
+  - `classifiers` 是 registry 用来显示 OS / 加速器支持的地方，所以那五条要跟实际支持一致。
+  - 发布前本地两条命令：`comfy node validate`（字段 + 安全检查）和 `comfy node pack`
+    （按 git 跟踪的文件加 `.comfyignore` 打包，看一眼 zip 里的文件列表）。
+  - 打出来是 31 个文件 / 约 83 kB：`veda_comfy/`、`__init__.py`、`example_workflows/`、
+    `assets/`、`requirements.txt`、`pyproject.toml`、README x2、LICENSE、NOTICE.md。
+    `.gitignore` / `.gitattributes` / `.comfyignore` 自己也排除掉了——解压进 `custom_nodes`
+    之后没人读它们。
+  - **README 里指向 `docs/` 的链接必须写成 GitHub 绝对地址**：`docs/` 不进包，相对链接在
+    registry 页面和用户装好的目录里都是死链。
 - **示例工作流**：`tools/make_example_workflows.py` 从 ComfyUI 官方 H3 模板派生（只插入 Veda
   节点、改分辨率到训练尺寸、T2VA 打开 8 步 Turbo LoRA、加说明），放在 `example_workflows/`，
   ComfyUI 会把它们列在模板浏览器的本节点分类下；节点的 `properties.models` 带打分器下载地址，
@@ -35,5 +51,9 @@
 
 ## 待办
 
-- 在 registry.comfy.org 创建 publisher（与 `PublisherId` 一致）并在仓库配置
-  `REGISTRY_ACCESS_TOKEN`。
+- 在仓库配置 secret `REGISTRY_ACCESS_TOKEN`（publisher `veda-sparse` 的 API key），
+  `publish_action.yml` 才能工作。publisher 本身已经建好了：
+  `GET https://api.comfy.org/publishers/veda-sparse` 返回 `PublisherStatusActive`。
+- 首次发布会创建节点 id：`GET https://api.comfy.org/nodes/veda-sparse-attention` 现在还是
+  404。这个 id 发布后不可更改。
+- 可选：加一张 21:9 的 `Banner`。

@@ -8,3 +8,8 @@ docs/
 .githooks/
 AGENTS.md
 CLAUDE.md
+# Repository plumbing: nothing reads these once the node is unzipped into
+# custom_nodes, and .gitignore is 4.6 kB of it.
+.gitignore
+.gitattributes
+.comfyignore

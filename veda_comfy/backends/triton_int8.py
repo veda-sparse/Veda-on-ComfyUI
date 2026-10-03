@@ -17,6 +17,7 @@ torch, and `veda_comfy.kernels.sage`.
 from __future__ import annotations
 
 import functools
+import sys
 
 import torch
 
@@ -64,8 +65,8 @@ def create(info) -> base.Backend:
     try:
         _kernel()
     except ImportError as error:
-        package = ('triton-windows' if torch.cuda.is_available()
-                   and __import__('sys').platform == 'win32' else 'triton')
+        package = ('triton-windows' if sys.platform == 'win32'
+                   else 'triton')
         raise base.BackendUnavailable(
             f'Triton is not installed ({error}); pip install {package}'
         ) from error

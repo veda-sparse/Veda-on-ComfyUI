@@ -885,11 +885,13 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         softmax_scale: Optional[Float32],
         window_size_left: Optional[Int32],
         window_size_right: Optional[Int32],
-        sQ_layout: cute.ComposedLayout,
-        sK_layout: cute.ComposedLayout,
-        sV_layout: cute.ComposedLayout,
-        sO_layout: cute.ComposedLayout,
-        sP_layout: cute.ComposedLayout | None,
+        # FP8 operands use plain (unswizzled) tiles, so these accept both
+        # layout kinds.
+        sQ_layout: cute.ComposedLayout | cute.Layout,
+        sK_layout: cute.ComposedLayout | cute.Layout,
+        sV_layout: cute.ComposedLayout | cute.Layout,
+        sO_layout: cute.ComposedLayout | cute.Layout,
+        sP_layout: cute.ComposedLayout | cute.Layout | None,
         gmem_tiled_copy_Q: cute.TiledCopy,
         gmem_tiled_copy_K: cute.TiledCopy,
         gmem_tiled_copy_V: cute.TiledCopy,

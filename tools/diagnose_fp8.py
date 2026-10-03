@@ -163,8 +163,8 @@ def main() -> None:
               f'max {row_sum.max().item():.4f}')
 
     print('\n6. the first 16 probabilities of one row, side by side')
-    a = p_fp8[0, :16].float().tolist()
-    b = p_bf16[0, :16].float().tolist()
+    a = p_fp8[0, 0, :16].float().tolist()
+    b = p_bf16[0, 0, :16].float().tolist()
     print('    bf16 ' + ' '.join(f'{x:7.4f}' for x in b))
     print('    fp8  ' + ' '.join(f'{x:7.4f}' for x in a))
     # A pure reordering keeps the multiset; duplication does not.

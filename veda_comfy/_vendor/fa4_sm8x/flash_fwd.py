@@ -49,6 +49,33 @@ from .tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, Tile
 from .utils import AuxData
 
 
+def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
+    """Accumulator of the QK gemm viewed as the A operand of an FP8 PV gemm.
+
+    quack's reshape_acc_to_frgA pairs two N tiles, which is the 8-value A
+    fragment of the 16-bit m16n8k16 atom. FP8 runs m16n8k32, whose A
+    fragment is 16 values, so four N tiles are gathered instead of two.
+    can_implement already requires tile_n to be a multiple of 32, which is
+    what makes MMA_N divisible by 4.
+    """
+    acc_layout = acc.layout
+    assert acc_layout.shape[2] % 4 == 0
+    l = cute.logical_divide(acc_layout, (None, None, 4))
+    view = cute.make_layout(
+        (
+            (l.shape[0][0], l.shape[0][1], l.shape[2][0]),
+            l.shape[1],
+            l.shape[2][1],
+        ),
+        stride=(
+            (l.stride[0][0], l.stride[0][1], l.stride[2][0]),
+            l.stride[1],
+            l.stride[2][1],
+        ),
+    )
+    return cute.make_tensor(acc.iterator, view)
+
+
 class FlashAttentionForwardBase:
 
     def __init__(
@@ -1373,7 +1400,10 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         softmax.rescale_O(mma_params.acc_O, row_scale)
         rP = cute.make_fragment_like(acc_S, self.dtype)
         rP.store(acc_S.load().to(self.dtype))
-        tOrP = layout_utils.reshape_acc_to_frgA(rP)
+        if const_expr(self.dtype.width == 8):
+            tOrP = _reshape_acc_to_frgA_fp8(rP)
+        else:
+            tOrP = layout_utils.reshape_acc_to_frgA(rP)
         if const_expr(self.num_stages > 1):
             sync()
             load_K_next()

@@ -66,6 +66,26 @@ def _problem(device, seq_len=4096, heads=4, seed=0):
     return (*tensors, mask, layout)
 
 
+def _attend_with_scale(backend, q, k, v, mask, layout, softmax_scale):
+    """attend() with an explicit softmax scale, to test the folding."""
+    from veda_comfy.kernels.fa4 import block_sparsity, interface
+    tensors = block_sparsity.DenseBlockMaskTorch(
+        block_mask=(mask & layout.kv_ok)[None],
+        partial_kv_blocks=~layout.full_tile,
+        block_size=(tiling.TILE_SIZE, tiling.TILE_SIZE))
+    with torch.no_grad():
+        out = interface.flash_attn_func(
+            q[None], k[None], v[None], softmax_scale=softmax_scale,
+            mask_mod=backend_mask_mod(), aux_tensors=[layout.slot_valid],
+            block_sparse_tensors=tensors)
+    return (out[0] if isinstance(out, tuple) else out)[0]
+
+
+def backend_mask_mod():
+    from veda_comfy.backends import fa4_sm120
+    return fa4_sm120._valid_key_mask_mod()
+
+
 def _rel(got: torch.Tensor, want: torch.Tensor, layout) -> str:
     real = layout.slot_valid.bool()
     a, b = got[real].float(), want[real].float()
@@ -92,6 +112,19 @@ def main() -> None:
 
     q, k, v, mask, layout = _problem(device, args.seq_len)
 
+    print('\n0. scale folding (bf16 kernel, operands scaled like FP8 does)')
+    # The FP8 backend divides q and k by their amax scales and folds those
+    # into softmax_scale. Running the known-good kernel the same way says
+    # whether that arithmetic is sound before blaming the FP8 kernel.
+    exact = reference.block_sparse_attention(q, k, v, mask, layout)
+    qs = (q.abs().amax().float() / _E4M3_MAX).item()
+    ks = (k.abs().amax().float() / _E4M3_MAX).item()
+    scaled_q = (q.float() / qs).to(q.dtype)
+    scaled_k = (k.float() / ks).to(k.dtype)
+    folded = _attend_with_scale(bf16, scaled_q, scaled_k, v, mask, layout,
+                                128 ** -0.5 * qs * ks)
+    print('   ', _rel(folded, exact, layout))
+
     print('\n1. structural (inputs exactly representable in e4m3)')
     qr, kr, vr = (_round_trip(t) for t in (q, k, v))
     got = fp8.attend(q, k, v, mask, layout)
@@ -115,7 +148,6 @@ def main() -> None:
                       bf16.attend(flat_q, flat_k, vr, mask, layout), layout))
 
     print('\nreference check (bf16 kernel against fp32 reference)')
-    exact = reference.block_sparse_attention(q, k, v, mask, layout)
     print('   ', _rel(bf16.attend(q, k, v, mask, layout), exact, layout))
 
 

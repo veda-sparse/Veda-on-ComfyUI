@@ -7,6 +7,17 @@
 
 ## 设计与不变量
 
+- **节点的自我介绍用生态里的既有说法**：ComfyUI 自己在 `comfy_extras/nodes_sparse_attention.py`
+  的散文里把这个机制叫 "attention override"（"attention overrider" 在上游和第三方里都不存在），
+  所以节点 description 和文档统一用 attention override，并照 `Model Sparse Attention` 的句式写：
+  先说做什么，再说放哪里，最后说什么时候不生效。放置位置这一句上游核心节点都不写，但 H3 相关的
+  官方教程、KJNodes 的 `Patch * Attention KJ`、`ComfyUI-H3-SLA-Attention` 都写，用户确实需要：
+  **MODEL 线上，模型与 LoRA 加载之后、sampler / guider 之前**。顺序对其他注意力节点不敏感
+  （override 是叠上去的，见下），只有 LoRA 必须在前。
+- **category 是 `model/patch/minimax`**，和 ComfyUI 自带的 `ModelSamplingMiniMaxH3`、
+  `Apply MiniMax H3 Fun ControlNet` 同一层，用户找 H3 的补丁节点时在一起。输入名 `model`
+  （小写，`MODEL` 是 `io.Model` 渲染出来的接口类型，不是输入名）与输出 `display_name='model'`
+  都照 `Model Sparse Attention` 对齐；**输入名是工作流 JSON 的一部分，改名会破坏已保存的工作流**。
 - **接入点是 `optimized_attention_override`，不是 block patch。** ComfyUI H3 的
   `Attention.forward`（`comfy/ldm/minimax/model.py`）在 qkv 投影（已含 LoRA）、QK-norm、RoPE
   之后调用 `optimized_attention`，`transformer_options` 里带着 `block_index`、

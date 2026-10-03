@@ -43,9 +43,10 @@ NOTE = """## ⚡ Veda sparse attention
 The **Veda Sparse Attention (MiniMax H3)** node (group "Veda") makes H3
 compute only the attention tiles a learned predictor marks as important
 (90% sparse by default): roughly **2-3x faster end to end** on long videos,
-the speed-up growing with length. Weights are untouched, so LoRAs and other
-H3 checkpoints work as usual.
+the speed-up growing with length.
 
+* Placement: it is an attention override, so it sits on the MODEL wire
+  after the model and any LoRA loaders, last before the guider.
 * First run: the predictor (~275 MB) is downloaded into `models/veda`, and
   the kernels compile once. The node shows which kernel it uses.
 * Compare: select the Veda node and press **Ctrl+B** (bypass) to render the

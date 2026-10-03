@@ -1,7 +1,8 @@
 """The ComfyUI node: "Veda Sparse Attention (MiniMax H3)".
 
-One node, MODEL in -> MODEL out, placed after the model loader and any LoRA
-loaders. Visible inputs are just the model and the predictor file; every
+One node, MODEL in -> MODEL out: an attention override, placed on the MODEL
+wire after the model loader and any LoRA loaders and last before the sampler
+or guider. Visible inputs are just the model and the predictor file; every
 tuning knob is an advanced input (hidden until "show advanced" is on) with
 the trained defaults. Problems are reported as text on the node, never as a
 silent fallback.
@@ -120,19 +121,20 @@ class VedaSparseAttention(io.ComfyNode):
         return io.Schema(
             node_id='VedaSparseAttention',
             display_name='Veda Sparse Attention (MiniMax H3)',
-            category='model/patch',
+            category='model/patch/minimax',
             search_aliases=['veda', 'sparse attention', 'minimax h3 speed',
                             'accelerate', 'faster video'],
             description=(
-                'Speeds up MiniMax-H3 (T2VA / FL2VA / R2VA) by computing '
-                'only the attention tiles a learned predictor marks as '
-                'important (90% sparse by default). Weights are untouched: '
-                'LoRAs and fine-tuned H3 checkpoints work as usual. Put it '
-                'after the model and LoRA loaders. Bypass it to compare '
-                'with full attention.'),
+                'Replaces MiniMax-H3 self-attention (T2VA / FL2VA / R2VA) '
+                'with Veda learned block-sparse attention: a trained '
+                'predictor marks the attention tiles that matter and only '
+                'those are computed (90% sparse by default). This is an '
+                'attention override, so put it on the MODEL wire after the '
+                'model and any LoRA loaders, last before the sampler or '
+                'guider. Bypass it to compare against full attention.'),
             inputs=[
-                io.Model.Input('model', tooltip='A MiniMax-H3 model (after '
-                               'any LoRA loaders).'),
+                io.Model.Input('model', tooltip='The MiniMax-H3 model to '
+                               'patch (after any LoRA loaders).'),
                 io.Combo.Input(
                     'predictor', options=_predictor_options(),
                     default=default,
@@ -167,8 +169,9 @@ class VedaSparseAttention(io.ComfyNode):
                     tooltip='Also show timing and diagnostics on the node '
                             'after each run, and log every decision.'),
             ],
-            outputs=[io.Model.Output(tooltip='The model with Veda sparse '
-                                     'attention.')],
+            outputs=[io.Model.Output(
+                display_name='model',
+                tooltip='The model with Veda sparse attention applied.')],
             hidden=[io.Hidden.unique_id],
         )
 

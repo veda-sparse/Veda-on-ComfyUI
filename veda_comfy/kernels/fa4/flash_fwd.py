@@ -60,36 +60,32 @@ from .tile_scheduler import SingleTileScheduler, SingleTileVarlenScheduler, Tile
 from .utils import AuxData
 
 
-def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
-    """QK accumulator viewed as the A operand of the FP8 PV gemm.
+def _acc_to_frgA_fp8(acc: cute.Tensor, p_scale: float,
+                     dtype) -> cute.Tensor:
+    """Builds the A operand of the FP8 PV gemm from the QK accumulator.
 
-    quack's helper pairs two N tiles, which fills the 8-value A fragment
-    of the 16-bit m16n8k16 atom. m16n8k32 holds 16 values per thread and
-    nests them differently: four k, then the second k block sixteen
-    further on, then the two rows (PTX orders the registers a0..a3 as
-    row g k+0..3, row g k+16..19, row g+8 k+0..3, row g+8 k+16..19). The
-    accumulator instead gives a column pair, then the row, then the tile,
-    so the view below re-nests it; what is left over is a pure reordering
-    of k, which FP8_V_PERMUTATION absorbs on V.
+    quack's 16-bit helper gets away with a strided view because the
+    m16n8k16 A order happens to be the accumulator's own (column, row,
+    tile). m16n8k32 wants four k per thread where the accumulator has
+    two, and expressing that as a view does not survive: the layout is
+    canonicalised by stride, which puts the rows back among the k. The
+    sixteen values are therefore gathered explicitly, in the order PTX
+    fills the registers (four k, then the row, then the k block sixteen
+    further on). What is left is a pure reordering of k, absorbed by
+    FP8_V_PERMUTATION on V.
     """
-    acc_layout = acc.layout
-    assert acc_layout.shape[2] % 4 == 0
-    if os.environ.get("VEDA_FP8_TRACE"):
-        print(f"[veda] fp8 A view from acc {acc_layout}", flush=True)
-    l = cute.logical_divide(acc_layout, (None, None, 4))
-    stride_col, stride_row = l.stride[0][0], l.stride[0][1]
-    stride_tile = l.stride[2][0]
-    view = cute.make_layout(
-        ((2, 2, 2, 2), l.shape[1], l.shape[2][1]),
-        stride=(
-            (stride_col, stride_tile, stride_row, 2 * stride_tile),
-            l.stride[1],
-            l.stride[2][1],
-        ),
-    )
-    if os.environ.get("VEDA_FP8_TRACE"):
-        print(f"[veda] fp8 A view -> {view}", flush=True)
-    return cute.make_tensor(acc.iterator, view)
+    mma_m = cute.size(acc.shape[1])
+    groups = cute.size(acc.shape[2]) // 4
+    frg = cute.make_rmem_tensor(((4, 2, 2), mma_m, groups), dtype)
+    for n in cutlass.range_constexpr(groups):
+        for m in cutlass.range_constexpr(mma_m):
+            for b in cutlass.range_constexpr(2):
+                for r in cutlass.range_constexpr(2):
+                    for i in cutlass.range_constexpr(4):
+                        value = acc[(i % 2, r), m, 4 * n + 2 * b + i // 2]
+                        frg[(i, r, b), m, n] = (value * Float32(p_scale)).to(
+                            dtype)
+    return frg
 
 
 # Slot i of the FP8 A operand carries the accumulator column at
@@ -1427,14 +1423,11 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             mask_fn(acc_S, n_block=n_block)
         row_scale = softmax.online_softmax(acc_S, is_first=is_first_n_block, check_inf=check_inf)
         softmax.rescale_O(mma_params.acc_O, row_scale)
-        rP = cute.make_fragment_like(acc_S, self.dtype)
-        if const_expr(self.p_scale != 1.0):
-            rP.store((acc_S.load() * Float32(self.p_scale)).to(self.dtype))
-        else:
-            rP.store(acc_S.load().to(self.dtype))
         if const_expr(self.dtype.width == 8):
-            tOrP = _reshape_acc_to_frgA_fp8(rP)
+            tOrP = _acc_to_frgA_fp8(acc_S, self.p_scale, self.dtype)
         else:
+            rP = cute.make_fragment_like(acc_S, self.dtype)
+            rP.store(acc_S.load().to(self.dtype))
             tOrP = layout_utils.reshape_acc_to_frgA(rP)
         if const_expr(self.num_stages > 1):
             sync()

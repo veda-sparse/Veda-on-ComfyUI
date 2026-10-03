@@ -36,6 +36,7 @@ import torch  # noqa: E402
 
 from veda_comfy import backends  # noqa: E402
 from veda_comfy import hardware  # noqa: E402
+from veda_comfy.backends import base  # noqa: E402
 from veda_comfy.core import reference  # noqa: E402
 from veda_comfy.core import tiling  # noqa: E402
 
@@ -102,6 +103,52 @@ def _sdpa(q, k, v):
     return out[0].transpose(0, 1)
 
 
+def _int8_block_sparse_model(q, k, v, mask, layout):
+    """The INT8 arithmetic, block-sparse, in plain torch.
+
+    Same quantisation as the kernel but with an exact masked softmax, so a
+    disagreement is the kernel's sparse walk or its padding mask and not
+    quantisation.
+    """
+    tile = tiling.TILE_SIZE
+    scale = q.shape[-1] ** -0.5
+    qd = _quant_dequant(q, tile)
+    kd = _quant_dequant(k, _K_BLOCK)
+    allowed = mask.repeat_interleave(tile, 1).repeat_interleave(tile, 2)
+    allowed = allowed & layout.slot_valid.bool()[None, None, :]
+    scores = torch.einsum('qhd,khd->hqk', qd, kd) * scale
+    probs = torch.softmax(scores.masked_fill(~allowed, float('-inf')),
+                          dim=-1).nan_to_num(0.0).half()
+    out = torch.einsum('hqk,khd->qhd', probs, v.half().float())
+    return (out * layout.slot_valid.to(out.dtype)[:, None, None]).to(q.dtype)
+
+
+def _padding_stage(device, info):
+    """Second stage: the self-test problem, which is mostly padding.
+
+    The dense stage above cannot see a padding-mask fault because it has no
+    padding. This one isolates it: against the INT8 model the only thing
+    left is the kernel's sparse walk.
+    """
+    print('\n--- the self-test problem (partial tiles, global rows) ---')
+    ours = backends._load('triton-int8', info)
+    q, k, v, mask, layout = base.selftest_problem(device, torch.bfloat16)
+    real = layout.slot_valid.bool()
+    exact = reference.block_sparse_attention(q, k, v, mask, layout)[real]
+    model = _int8_block_sparse_model(q, k, v, mask, layout)[real].float()
+    got = ours.attend(q, k, v, mask, layout)[real].float()
+    exact = exact.float()
+    scale = exact.abs().max().item()
+    for label, x in (('INT8 model vs fp32', model), ('our kernel vs fp32',
+                                                     got)):
+        print(f'  {label:22s} rel L2 {(x - exact).norm() / exact.norm():7.3%}'
+              f'   max err {(x - exact).abs().max().item() / scale:7.3%}')
+    delta = (got - model).norm().item() / model.norm().item()
+    print(f'  our kernel vs the INT8 model: rel L2 {delta:.3%}')
+    print('  -> quantisation, not the sparse walk' if delta < 0.01 else
+          '  -> the kernel disagrees with its own arithmetic: a real fault')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--tiles', type=int, default=32)
@@ -161,6 +208,7 @@ def main() -> None:
                if fp8_err <= int8_err else
                'FP8 is further from the reference than ComfyUI\'s INT8')
     print(f'{verdict} ({fp8_err:.3%} against {int8_err:.3%}).')
+    _padding_stage(device, info)
 
 
 if __name__ == '__main__':

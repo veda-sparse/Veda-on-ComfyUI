@@ -10,8 +10,8 @@ all.
 
 Every backend must pass `self_test` on the actual device before it is used.
 The test also checks that the result is really sparse: a kernel that
-silently ignores the block mask (FA4's unpatched SM8x path did exactly that)
-fails it.
+silently ignores the block mask fails it; that is not hypothetical, an
+earlier FlashAttention-4 build accepted the mask and ignored it.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ class Backend(abc.ABC):
     """Block-sparse attention on tile-ordered tensors.
 
     Attributes:
-        name: Stable id used in logs and settings, e.g. 'fa4-sm89'.
-        display: Name shown on the node, e.g. 'FA4 (SM89)'.
+        name: Stable id used in logs and settings, e.g. 'triton-int8'.
+        display: Name shown on the node, e.g. 'Triton INT8 (SM120)'.
         dtypes: Input dtypes the kernel takes natively; others are cast.
         tolerance: Largest pointwise error the self-test accepts, as a
             fraction of the reference's absmax. This is a property of the

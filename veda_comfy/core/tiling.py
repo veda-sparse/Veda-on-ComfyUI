@@ -234,7 +234,7 @@ def gather_tiles(x: torch.Tensor, layout: TileLayout,
         heads: [H'] int64 head indices on x's device.
 
     Returns:
-        [N, H', D] contiguous, tile order (FA4's native seq-major layout).
+        [N, H', D] contiguous, tile order (the kernel's seq-major layout).
     """
     out = x[layout.gather_index[:, None], heads[None, :]]
     if layout.pad_slots.numel():

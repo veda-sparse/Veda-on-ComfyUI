@@ -1,6 +1,6 @@
 """What the attention runs on: device kind, SM family and product subtype.
 
-Backends are chosen by SM family (one FA4 backend per family, see
+The SM family decides whether a kernel exists at all (see
 `backends/`); the subtype only changes labels, memory heuristics and install
 hints. SM120 is split on purpose: compute capability 12.0 covers GeForce
 RTX 50 and the RTX PRO Blackwell cards, 12.1 is GB10 (DGX Spark, aarch64,
@@ -16,8 +16,9 @@ import sys
 
 import torch
 
-# (major, minor) -> SM family. Families share one kernel build: FA4 picks
-# its kernel by `arch // 10`, and sm86 / sm87 / sm89 run the sm80 kernels.
+# (major, minor) -> SM family. The family is what the node reports and
+# what hardware notes are filed under; the Triton kernel itself compiles
+# per device, so nothing dispatches on it.
 _FAMILIES = {
     (8, 0): 'sm80', (8, 6): 'sm86', (8, 7): 'sm87', (8, 9): 'sm89',
     (9, 0): 'sm90',

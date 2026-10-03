@@ -7,8 +7,8 @@ against ~45 for our bf16 CuTe kernel, and ~1.3% relative error against an
 fp32 reference where FP8 costs ~5.3%.
 
 Covers every CUDA GPU from SM80 on, because Triton does: one backend
-instead of one per SM family. The FA4 CuTe kernels stay as the bf16
-fallback for anyone without a working Triton (see backends/__init__.py).
+instead of one per SM family, and no fallback behind it (see
+backends/__init__.py for why that is deliberate).
 
 Self-contained on purpose (see backends/base.py): imports only this file,
 torch, and `veda_comfy.kernels.sage`.

@@ -27,8 +27,9 @@ Why INT8 and not FP8: e4m3 keeps three mantissa bits, so its relative
 error is ~3.6% per value, where INT8 with a per-block scale resolves 127
 uniform steps (~0.9%). Measured on attention output, FP8 Q/K alone cost
 3.9% against an fp32 reference where this path costs 1.3%. That is why
-SageAttention chose INT8, and the CuTe DSL exposes no integer warp MMA, so
-this is also why the kernel is here and not in the FA4 fork.
+SageAttention chose INT8. It is also why the kernel is written in Triton:
+the CuTe DSL exposes no integer warp MMA below SM100, so a CuTe kernel
+cannot reach this arithmetic at all on consumer cards.
 """
 
 from __future__ import annotations

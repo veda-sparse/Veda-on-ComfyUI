@@ -55,9 +55,8 @@ H3 checkpoints work as usual.
   (the node says so).
 * Tuning (advanced inputs): generated / reference sparsity ("90%" or a
   tile count such as "24"), 0-based full-attention layers and steps,
-  kernel backend, verbose diagnostics.
-* NVIDIA: run `install_fa4` in the Veda folder once for the fastest
-  kernels. Apple silicon: `pip install mlx`.
+  verbose diagnostics.
+* The sparse kernel installs with the node; nothing else to set up.
 """
 
 

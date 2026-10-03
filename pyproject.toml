@@ -6,7 +6,7 @@ license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"
 # Nothing beyond ComfyUI's own requirements. Optional fast kernels:
-# install_fa4 (NVIDIA, requirements-fa4.txt) or `pip install mlx` (Apple).
+# the sparse kernel, which is installed with the node.
 # Installed with the node, so the sparse kernel works without the user
 # doing anything. Triton is a real dependency now that the kernel is
 # written in it; on Linux torch already pulls the same package in, so this
@@ -42,9 +42,6 @@ testpaths = ["tests/unit"]
 
 [tool.ruff]
 line-length = 80
-# The FA4 fork keeps upstream's formatting so that UPSTREAM.diff stays
-# readable and merges stay possible; it has its own conventions.
-extend-exclude = ["veda_comfy/kernels/fa4", "veda_comfy/kernels/quack"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]

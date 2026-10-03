@@ -162,6 +162,17 @@ def main() -> None:
               f'min {row_sum.min().item():.4f} '
               f'max {row_sum.max().item():.4f}')
 
+    print('\n6. the first 16 probabilities of one row, side by side')
+    a = p_fp8[0, :16].float().tolist()
+    b = p_bf16[0, :16].float().tolist()
+    print('    bf16 ' + ' '.join(f'{x:7.4f}' for x in b))
+    print('    fp8  ' + ' '.join(f'{x:7.4f}' for x in a))
+    # A pure reordering keeps the multiset; duplication does not.
+    import collections
+    rounded = collections.Counter(round(x, 4) for x in a)
+    print(f'    distinct fp8 values {len(rounded)}/16, '
+          f'most common {rounded.most_common(2)}')
+
     print('\nreference check (bf16 kernel against fp32 reference)')
     print('   ', _rel(bf16.attend(q, k, v, mask, layout), exact, layout))
 

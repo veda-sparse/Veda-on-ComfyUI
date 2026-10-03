@@ -684,9 +684,9 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         # the accumulator distributes its columns; the 32-wide one would
         # need V permuted to compensate.
         if self.dtype.width == 8:
-            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
+            op_qk = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
             op_pv = warp.MmaFP8Op(self.dtype, Float32, (16, 8, 16))
-            tile_k_qk, tile_k_pv = 32, 16
+            tile_k_qk, tile_k_pv = 16, 16
         else:
             op_qk = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
             op_pv = warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))

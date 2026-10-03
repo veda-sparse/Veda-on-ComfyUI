@@ -107,8 +107,10 @@ def main() -> None:
                       bf16.attend(qr, kr, eye, mask, layout), layout))
 
     print('\n3. V only (flat softmax, so the output is a mean of V)')
-    flat_q = torch.zeros_like(q)
-    flat_k = torch.zeros_like(k)
+    # Tiny but nonzero: all-zero operands make the quantisation scale
+    # degenerate and the result NaN, which says nothing about the kernel.
+    flat_q = torch.full_like(q, 1e-2)
+    flat_k = torch.full_like(k, 1e-2)
     print('   ', _rel(fp8.attend(flat_q, flat_k, v, mask, layout),
                       bf16.attend(flat_q, flat_k, vr, mask, layout), layout))
 

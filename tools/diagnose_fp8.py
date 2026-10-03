@@ -147,6 +147,21 @@ def main() -> None:
     print('   ', _rel(fp8.attend(flat_q, flat_k, v, mask, layout),
                       bf16.attend(flat_q, flat_k, vr, mask, layout), layout))
 
+    print('\n4. dense mask (every block kept: isolates the sparse walk)')
+    full = torch.ones_like(mask) & layout.kv_ok
+    print('   ', _rel(fp8.attend(q, k, v, full, layout),
+                      bf16.attend(qr, kr, vr, full, layout), layout))
+
+    print('\n5. who is peaked (V identity: count of outputs above 0.5)')
+    p_fp8 = fp8.attend(q, k, eye, mask, layout)[layout.slot_valid.bool()]
+    p_bf16 = bf16.attend(qr, kr, eye, mask, layout)[layout.slot_valid.bool()]
+    for name, t in (('fp8', p_fp8), ('bf16', p_bf16)):
+        row_sum = t.float().sum(-1)
+        print(f'    {name:4s} >0.5: {(t.float() > 0.5).sum().item():7d}  '
+              f'row sums mean {row_sum.mean().item():.4f} '
+              f'min {row_sum.min().item():.4f} '
+              f'max {row_sum.max().item():.4f}')
+
     print('\nreference check (bf16 kernel against fp32 reference)')
     print('   ', _rel(bf16.attend(q, k, v, mask, layout), exact, layout))
 

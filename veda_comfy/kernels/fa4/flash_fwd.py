@@ -76,15 +76,21 @@ def _acc_to_frgA_fp8(acc: cute.Tensor, p_scale: float,
     """
     mma_m = cute.size(acc.shape[1])
     groups = cute.size(acc.shape[2]) // 4
-    frg = cute.make_rmem_tensor(((4, 2, 2), mma_m, groups), dtype)
-    for n in cutlass.range_constexpr(groups):
-        for m in cutlass.range_constexpr(mma_m):
-            for b in cutlass.range_constexpr(2):
-                for r in cutlass.range_constexpr(2):
-                    for i in cutlass.range_constexpr(4):
-                        value = acc[(i % 2, r), m, 4 * n + 2 * b + i // 2]
-                        frg[(i, r, b), m, n] = (value * Float32(p_scale)).to(
-                            dtype)
+    # Plain Python loops: this helper is not preprocessed by the DSL, so
+    # they run once at trace time and the gather is fully unrolled.
+    stage = cute.make_rmem_tensor(((4, 2, 2), mma_m, groups), Float32)
+    for n in range(groups):
+        for m in range(mma_m):
+            for b in range(2):
+                for r in range(2):
+                    for i in range(4):
+                        stage[(i, r, b), m, n] = (
+                            acc[(i % 2, r), m, 4 * n + 2 * b + i // 2])
+    frg = cute.make_fragment_like(stage, dtype)
+    if p_scale != 1.0:
+        frg.store((stage.load() * Float32(p_scale)).to(dtype))
+    else:
+        frg.store(stage.load().to(dtype))
     return frg
 
 

@@ -3,6 +3,7 @@ veda_comfy/_vendor.
 
     python tools/vendor_fa4.py            # rewrite veda_comfy/_vendor
     python tools/vendor_fa4.py --check    # verify the committed copies
+    python tools/vendor_fa4.py --work-dir DIR   # patched tree to edit
 
 Three packages are generated from pinned wheels, never edited by hand:
 
@@ -25,6 +26,12 @@ All of them get the same mechanical changes:
 Every input is pinned by sha256 (wheels, the upstream files the patches
 touch, the patched results), so a regeneration is reproducible and an
 upstream change cannot slip in silently. Needs `git` on PATH.
+
+To write a new patch, `--work-dir DIR` leaves the patched FA4 tree in a
+git repo (upstream as the first commit, the patch series as the second).
+Edit it there, then `git -C DIR format-patch HEAD~1` and drop the result
+into the matching `tools/fa4_patches/<series>/`; the hashes in
+PATCHED_SHA256 then have to be refreshed from the new output.
 """
 
 from __future__ import annotations
@@ -73,8 +80,8 @@ UPSTREAM_SHA256 = {
         '80cb6bfb436160d73b7214529f94d28b7333c98dff75a53d20552eb33645fea2',
     'interface.py':
         '144a3dd6f72f955e43834500808c7d47b3b4a76fdcd0b7188f9b459d85007cab',
-    # Not patched, but SM120 block sparsity relies on these being thin
-    # subclasses of the patched SM80 kernels.
+    # SM120 block sparsity relies on these being thin subclasses of the
+    # patched SM80 kernels; the FP8 patch also widens sm120's dtype gate.
     'flash_fwd_sm120.py':
         'abd017add69914e46f0fcfc017ad51c3d07d79fd87d15f969036ddd82bcc7da2',
     'flash_bwd_sm120.py':
@@ -86,11 +93,13 @@ PATCHED_SHA256 = {
     'block_sparse_utils.py':
         '69b7a955e7a7cb756b0b475241e771feba7497670b570dd5ddb279e2b51ac7ad',
     'flash_fwd.py':
-        'a2e543e5a35f20747df059f692210791047f36af8cf483b788f79cef543c4fdc',
+        '7ffc56b74a73a6e9ba55c6d3bb55eee98d369febc802ab6ff0f8191f82f23f66',
     'flash_bwd.py':
         '0d7fffb59e3013d0e24172f7c897f9a0fec71549c62ed1b1b29e19358b33038c',
     'interface.py':
-        '2db27ac666538a74c598f6c3feccf9b0969a7d1db9941947a8bea1ecef0acab2',
+        '38d9a337f7ab266203b1cd7db26dc3603b63c6235c09e0a9d58727d2bc63294d',
+    'flash_fwd_sm120.py':
+        'a3f0b2dcbe727b256555be25c04aada7e87a0ecf996bd6e4e8e949bfb5939719',
 }
 
 _OPTIONAL_FCNTL = ('try:\n'
@@ -173,25 +182,62 @@ def _unzip(wheel: bytes, prefix: str) -> tuple[dict[str, bytes],
     return files, licenses
 
 
-def _apply_patches(files: dict[str, bytes]) -> dict[str, bytes]:
+def _write_tree(root: str, files: dict[str, bytes]) -> str:
+    cute = os.path.join(root, 'flash_attn', 'cute')
+    os.makedirs(cute, exist_ok=True)
+    for rel, data in files.items():
+        with open(os.path.join(cute, rel), 'wb') as f:
+            f.write(data)
+    return cute
+
+
+def _git(work_dir: str, *args: str) -> None:
+    subprocess.run(['git', *args], cwd=work_dir, check=True,
+                   stdout=subprocess.DEVNULL)
+
+
+def _patch_files() -> list[str]:
+    return sorted(os.path.join(PATCHES, p) for p in os.listdir(PATCHES)
+                  if p.endswith('.patch'))
+
+
+def _apply_patches(files: dict[str, bytes],
+                   verify: bool = True) -> dict[str, bytes]:
     with tempfile.TemporaryDirectory() as tmp:
-        cute = os.path.join(tmp, 'flash_attn', 'cute')
-        os.makedirs(cute)
-        for rel, data in files.items():
-            with open(os.path.join(cute, rel), 'wb') as f:
-                f.write(data)
-        patches = sorted(os.path.join(PATCHES, p) for p in os.listdir(PATCHES)
-                         if p.endswith('.patch'))
-        subprocess.run(['git', 'apply', '--exclude=tests/*', *patches],
-                       cwd=tmp, check=True)
+        cute = _write_tree(tmp, files)
+        subprocess.run(['git', 'apply', '--exclude=tests/*',
+                        *_patch_files()], cwd=tmp, check=True)
         patched = {}
         for rel in files:
             with open(os.path.join(cute, rel), 'rb') as f:
                 patched[rel] = f.read()
-    for rel, digest in PATCHED_SHA256.items():
-        if _sha256(patched[rel]) != digest:
-            sys.exit(f'patched {rel} differs from the pinned result')
+    if verify:
+        for rel, digest in PATCHED_SHA256.items():
+            if _sha256(patched[rel]) != digest:
+                sys.exit(f'patched {rel} differs from the pinned result')
     return patched
+
+
+def work_dir(path: str, fa4_wheel: str | None) -> None:
+    """Lays out the patched FA4 tree in a git repo, ready to edit."""
+    if os.path.exists(path) and os.listdir(path):
+        sys.exit(f'{path} exists and is not empty')
+    files, _ = _unzip(_download(FA4_WHEEL, FA4_WHEEL_SHA256, fa4_wheel,
+                                'FA4'), 'flash_attn/cute/')
+    os.makedirs(path, exist_ok=True)
+    _write_tree(path, files)
+    _git(path, 'init', '-q')
+    _git(path, 'add', '-A')
+    _git(path, '-c', 'user.name=vendor', '-c', 'user.email=vendor@local',
+         'commit', '-q', '-m', f'FlashAttention-4 {FA4_VERSION} (upstream)')
+    subprocess.run(['git', 'apply', '--exclude=tests/*', *_patch_files()],
+                   cwd=path, check=True)
+    _git(path, 'add', '-A')
+    _git(path, '-c', 'user.name=vendor', '-c', 'user.email=vendor@local',
+         'commit', '-q', '-m', 'sm8x block-sparse patch series')
+    print(f'patched FA4 tree in {path} (2 commits). Edit, then:\n'
+          f'  git -C {path} commit -am "<title>" && '
+          f'git -C {path} format-patch HEAD~1')
 
 
 def _import_rules(own: str, depth: int) -> list[tuple[re.Pattern, str]]:
@@ -329,8 +375,13 @@ def main() -> None:
     parser.add_argument('--check', action='store_true',
                         help='verify veda_comfy/_vendor instead of writing')
     parser.add_argument('--wheel', help='local FA4 wheel (else download)')
+    parser.add_argument('--work-dir',
+                        help='lay out the patched FA4 tree here for editing')
     parser.add_argument('--quack-wheel', help='local QuACK wheel')
     args = parser.parse_args()
+    if args.work_dir:
+        work_dir(args.work_dir, args.wheel)
+        return
     with tempfile.TemporaryDirectory() as tmp:
         generate(tmp, args.wheel, args.quack_wheel)
         if args.check:

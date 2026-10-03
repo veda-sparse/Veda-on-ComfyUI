@@ -36,7 +36,12 @@ class FlashAttentionForwardSm120(FlashAttentionForwardSm80):
 
         Same logic as SM80 but uses SM120's shared memory capacity (99 KB).
         """
-        if dtype not in [cutlass.Float16, cutlass.BFloat16]:
+        if dtype not in [
+            cutlass.Float16,
+            cutlass.BFloat16,
+            cutlass.Float8E4M3FN,
+            cutlass.Float8E5M2,
+        ]:
             return False
         if head_dim % 8 != 0:
             return False
@@ -46,10 +51,13 @@ class FlashAttentionForwardSm120(FlashAttentionForwardSm80):
             return False
         if num_threads % 32 != 0:
             return False
+        if dtype.width == 8 and (head_dim % 32 != 0 or tile_n % 32 != 0):
+            return False
         # Shared memory usage: Q tile + (K tile + V tile)
-        smem_usage_Q = tile_m * head_dim * 2
-        smem_usage_K = tile_n * head_dim * num_stages * 2
-        smem_usage_V = tile_n * head_dim_v * num_stages * 2
+        elem_bytes = dtype.width // 8
+        smem_usage_Q = tile_m * head_dim * elem_bytes
+        smem_usage_K = tile_n * head_dim * num_stages * elem_bytes
+        smem_usage_V = tile_n * head_dim_v * num_stages * elem_bytes
         smem_usage_QV = (
             (smem_usage_Q + smem_usage_V) if not Q_in_regs else max(smem_usage_Q, smem_usage_V)
         )

@@ -161,7 +161,12 @@ class FlashAttentionForwardBase:
         :return: True if the kernel can be implemented, False otherwise
         :rtype: bool
         """
-        if dtype not in [cutlass.Float16, cutlass.BFloat16]:
+        if dtype not in [
+            cutlass.Float16,
+            cutlass.BFloat16,
+            cutlass.Float8E4M3FN,
+            cutlass.Float8E5M2,
+        ]:
             return False
         if head_dim % 8 != 0:
             return False
@@ -171,11 +176,16 @@ class FlashAttentionForwardBase:
             return False
         if num_threads % 32 != 0:
             return False
+        # FP8 operands feed an m16n8k32 MMA, so the contraction dim of both
+        # gemms (head_dim for QK, tile_n for PV) must be a multiple of 32.
+        if dtype.width == 8 and (head_dim % 32 != 0 or tile_n % 32 != 0):
+            return False
         # Check if block size setting is out of shared memory capacity
         # Shared memory usage: Q tile + (K tile + V tile) where K and V use the same tile size
-        smem_usage_Q = tile_m * head_dim * 2
-        smem_usage_K = tile_n * head_dim * num_stages * 2
-        smem_usage_V = tile_n * head_dim_v * num_stages * 2
+        elem_bytes = dtype.width // 8
+        smem_usage_Q = tile_m * head_dim * elem_bytes
+        smem_usage_K = tile_n * head_dim * num_stages * elem_bytes
+        smem_usage_V = tile_n * head_dim_v * num_stages * elem_bytes
         smem_usage_QV = (
             (smem_usage_Q + smem_usage_V) if not Q_in_regs else max(smem_usage_Q, smem_usage_V)
         )
@@ -601,15 +611,23 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         return sQ_layout_atom, sK_layout_atom, sV_layout_atom, sO_layout_atom, sP_layout_atom
 
     def _get_tiled_mma(self):
+        # FP8 operands use mma.sync.m16n8k32 (SM89 and SM120 have the FP8
+        # tensor cores; the SM80 kernel body is otherwise dtype-generic).
+        if self.dtype.width == 8:
+            make_op = lambda: warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
+            tile_k = 32
+        else:
+            make_op = lambda: warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
+            tile_k = 16
         tiled_mma_qk = cute.make_tiled_mma(
-            warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16)),
+            make_op(),
             (self.num_threads // 32, 1, 1),
-            permutation_mnk=(self.num_threads // 32 * 16, 16, 16),
+            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k),
         )
         tiled_mma_pv = cute.make_tiled_mma(
-            warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16)),
+            make_op(),
             (self.num_threads // 32, 1, 1),
-            permutation_mnk=(self.num_threads // 32 * 16, 16, 16),
+            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k),
         )
         return tiled_mma_qk, tiled_mma_pv
 
@@ -920,14 +938,17 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             # ///////////////////////////////////////////////////////////////////////////////
             # Smem copy atom tiling
             # ///////////////////////////////////////////////////////////////////////////////
-            smem_copy_atom_QK = cute.make_copy_atom(
-                warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4),
-                self.dtype,
-            )
-            smem_copy_atom_V = cute.make_copy_atom(
-                warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4),
-                self.dtype,
-            )
+            # ldmatrix comes in a 16-bit and an 8-bit flavour; the 8-bit
+            # transposing variant is what lets the FP8 PV gemm read V from
+            # the same (tile_n, head_dim_v) smem tile as the 16-bit path.
+            if const_expr(self.dtype.width == 8):
+                qk_ld_op = warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4)
+                v_ld_op = warp.LdMatrix16x8x8bOp(transpose=True, num_matrices=4)
+            else:
+                qk_ld_op = warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4)
+                v_ld_op = warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4)
+            smem_copy_atom_QK = cute.make_copy_atom(qk_ld_op, self.dtype)
+            smem_copy_atom_V = cute.make_copy_atom(v_ld_op, self.dtype)
             smem_thr_copy_Q = utils.make_tiled_copy_A(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_K = utils.make_tiled_copy_B(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_V = utils.make_tiled_copy_B(smem_copy_atom_V, tiled_mma_pv).get_slice(tidx)

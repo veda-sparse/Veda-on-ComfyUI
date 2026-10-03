@@ -77,7 +77,7 @@ def test_provenance_records_the_patch_series():
     with open(os.path.join(VENDOR, 'fa4_upstream', 'VENDORED.json')) as f:
         upstream = json.load(f)
     assert sm8x['version'] == upstream['version'] == '4.0.0b32'
-    assert len(sm8x['patches']) == 7 and upstream['patches'] == []
+    assert len(sm8x['patches']) == 8 and upstream['patches'] == []
 
 
 def _cuda(cc, name='GPU'):

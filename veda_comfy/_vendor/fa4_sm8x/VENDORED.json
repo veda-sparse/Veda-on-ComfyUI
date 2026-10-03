@@ -14,7 +14,8 @@
   "0004-CuTe-SM80-Dense-order-block-walk-bit-exact-vs-dense-.patch",
   "0005-CuTe-SM80-Low-overhead-DenseBlockMask-launches-8-war.patch",
   "0006-CuTe-SM120-Enable-block-sparse-forward-on-SM120.patch",
-  "0007-CuTe-SM120-Enable-block-sparse-backward-on-SM120.patch"
+  "0007-CuTe-SM120-Enable-block-sparse-backward-on-SM120.patch",
+  "0008-CuTe-SM8x-SM120-FP8-e4m3-e5m2-attention-on-the-SM80-.patch"
  ],
  "version": "4.0.0b32",
  "wheel": "https://files.pythonhosted.org/packages/40/d0/b1e9ab8eefc9e67179a372c3e1a8e9f83d963c3a8e5bd4c738e55dd134c0/flash_attn_4-4.0.0b32-py3-none-any.whl",

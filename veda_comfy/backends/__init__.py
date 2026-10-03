@@ -27,8 +27,10 @@ import torch
 from . import base
 from .. import hardware
 
-# User-facing choices (the node's `backend` input).
-CHOICES = ('auto', 'fa4', 'flex', 'torch', 'mlx')
+# User-facing choices (the node's `backend` input). 'fa4-fp8' runs the
+# same kernels with e4m3 operands on the architectures whose FA4 build has
+# FP8 tensor cores (SM8x / SM120).
+CHOICES = ('auto', 'fa4', 'fa4-fp8', 'flex', 'torch', 'mlx')
 
 _MODULES = {
     'fa4-sm80': 'fa4_sm80', 'fa4-sm90': 'fa4_sm90',
@@ -37,6 +39,18 @@ _MODULES = {
 }
 _FA4_BY_MAJOR = {8: 'fa4-sm80', 9: 'fa4-sm90', 10: 'fa4-sm100',
                  11: 'fa4-sm100', 12: 'fa4-sm120'}
+# Only the SM80-family kernel carries our FP8 patch.
+_FP8_SUFFIX = '-fp8'
+_FP8_CAPABLE = ('fa4-sm80', 'fa4-sm120')
+
+
+def _load(name: str, info: hardware.DeviceInfo) -> base.Backend:
+    """Instantiates one candidate by name (an '-fp8' suffix selects the
+    e4m3 variant of that kernel)."""
+    fp8 = name.endswith(_FP8_SUFFIX)
+    base_name = name[:-len(_FP8_SUFFIX)] if fp8 else name
+    module = importlib.import_module(f'.{_MODULES[base_name]}', __name__)
+    return module.create(info, fp8=fp8) if fp8 else module.create(info)
 
 
 @dataclasses.dataclass
@@ -72,9 +86,16 @@ def candidates(info: hardware.DeviceInfo, requested: str = 'auto'
     auto = [name for name in auto if name]
     if requested in ('auto', '', None):
         return auto
-    first = fa4 if requested == 'fa4' else requested
-    if first is None:
-        return auto
+    if requested in ('fa4', 'fa4-fp8'):
+        if fa4 is None:
+            return auto
+        first = fa4
+        if requested == 'fa4-fp8':
+            if fa4 not in _FP8_CAPABLE:
+                return auto
+            first = fa4 + _FP8_SUFFIX
+    else:
+        first = requested
     return [first] + [name for name in auto if name != first]
 
 
@@ -101,9 +122,7 @@ def resolve(device: torch.device, requested: str = 'auto',
         chosen = None
         for name in candidates(info, requested):
             try:
-                module = importlib.import_module(f'.{_MODULES[name]}',
-                                                 __name__)
-                backend = module.create(info)
+                backend = _load(name, info)
                 note = backend.warmup_note()
                 if notify is not None and note:
                     notify(f'{backend.display}: {note}')
@@ -133,8 +152,7 @@ def probe(device: torch.device, requested: str = 'auto'
     out = []
     for name in candidates(info, requested):
         try:
-            module = importlib.import_module(f'.{_MODULES[name]}', __name__)
-            backend = module.create(info)
+            backend = _load(name, info)
             out.append((backend.name, backend.display, None))
         except Exception as error:  # report every failure the same way
             out.append((name, name, str(error)))

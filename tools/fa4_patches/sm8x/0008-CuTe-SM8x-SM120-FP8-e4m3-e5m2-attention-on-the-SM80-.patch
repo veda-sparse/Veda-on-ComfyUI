@@ -1,0 +1,174 @@
+From 0993cb34cd309a5f32f1dfb085ec69c6b03bddb3 Mon Sep 17 00:00:00 2001
+From: veda <veda@local>
+Date: Sat, 3 Oct 2026 14:41:29 +0800
+Subject: [PATCH] [CuTe, SM8x/SM120] FP8 e4m3/e5m2 attention on the SM80-family
+ kernel
+
+The SM80-family forward kernel is dtype-generic apart from three places
+that name 16-bit types: the MMA atom, the smem ldmatrix atoms and the
+dtype allow-lists. SM89 and SM120 have FP8 tensor cores, and CuTe
+exposes warp.MmaFP8Op (m16n8k32) plus 8-bit ldmatrix atoms for them, so
+FP8 only needs those three swapped:
+
+- MmaFP8Op with a 32-element contraction step for both gemms;
+- LdMatrix8x16x8bOp / LdMatrix16x8x8bOp(transpose) for 1-byte operands,
+  so V is read from the same (tile_n, head_dim_v) smem tile as before;
+- can_implement accepts fp8, sizes smem by the real element width, and
+  requires head_dim and tile_n to be multiples of the 32-wide step.
+
+Scales stay outside the kernel: q/k descales fold into softmax_scale and
+the v descale into the output, so no descale plumbing is added here.
+P is already produced with acc_S.load().to(self.dtype), which converts
+to fp8 unchanged.
+---
+ flash_attn/cute/flash_fwd.py       | 53 +++++++++++++++++++++---------
+ flash_attn/cute/flash_fwd_sm120.py | 16 ++++++---
+ flash_attn/cute/interface.py       |  5 ++-
+ 3 files changed, 53 insertions(+), 21 deletions(-)
+
+diff --git a/flash_attn/cute/flash_fwd.py b/flash_attn/cute/flash_fwd.py
+index fb8ddd4..5c7f328 100644
+--- a/flash_attn/cute/flash_fwd.py
++++ b/flash_attn/cute/flash_fwd.py
+@@ -159,7 +159,12 @@ class FlashAttentionForwardBase:
+         :return: True if the kernel can be implemented, False otherwise
+         :rtype: bool
+         """
+-        if dtype not in [cutlass.Float16, cutlass.BFloat16]:
++        if dtype not in [
++            cutlass.Float16,
++            cutlass.BFloat16,
++            cutlass.Float8E4M3FN,
++            cutlass.Float8E5M2,
++        ]:
+             return False
+         if head_dim % 8 != 0:
+             return False
+@@ -169,11 +174,16 @@ class FlashAttentionForwardBase:
+             return False
+         if num_threads % 32 != 0:
+             return False
++        # FP8 operands feed an m16n8k32 MMA, so the contraction dim of both
++        # gemms (head_dim for QK, tile_n for PV) must be a multiple of 32.
++        if dtype.width == 8 and (head_dim % 32 != 0 or tile_n % 32 != 0):
++            return False
+         # Check if block size setting is out of shared memory capacity
+         # Shared memory usage: Q tile + (K tile + V tile) where K and V use the same tile size
+-        smem_usage_Q = tile_m * head_dim * 2
+-        smem_usage_K = tile_n * head_dim * num_stages * 2
+-        smem_usage_V = tile_n * head_dim_v * num_stages * 2
++        elem_bytes = dtype.width // 8
++        smem_usage_Q = tile_m * head_dim * elem_bytes
++        smem_usage_K = tile_n * head_dim * num_stages * elem_bytes
++        smem_usage_V = tile_n * head_dim_v * num_stages * elem_bytes
+         smem_usage_QV = (
+             (smem_usage_Q + smem_usage_V) if not Q_in_regs else max(smem_usage_Q, smem_usage_V)
+         )
+@@ -599,15 +609,23 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+         return sQ_layout_atom, sK_layout_atom, sV_layout_atom, sO_layout_atom, sP_layout_atom
+ 
+     def _get_tiled_mma(self):
++        # FP8 operands use mma.sync.m16n8k32 (SM89 and SM120 have the FP8
++        # tensor cores; the SM80 kernel body is otherwise dtype-generic).
++        if self.dtype.width == 8:
++            make_op = lambda: warp.MmaFP8Op(self.dtype, Float32, (16, 8, 32))
++            tile_k = 32
++        else:
++            make_op = lambda: warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16))
++            tile_k = 16
+         tiled_mma_qk = cute.make_tiled_mma(
+-            warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16)),
++            make_op(),
+             (self.num_threads // 32, 1, 1),
+-            permutation_mnk=(self.num_threads // 32 * 16, 16, 16),
++            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k),
+         )
+         tiled_mma_pv = cute.make_tiled_mma(
+-            warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16)),
++            make_op(),
+             (self.num_threads // 32, 1, 1),
+-            permutation_mnk=(self.num_threads // 32 * 16, 16, 16),
++            permutation_mnk=(self.num_threads // 32 * 16, 16, tile_k),
+         )
+         return tiled_mma_qk, tiled_mma_pv
+ 
+@@ -918,14 +936,17 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
+             # ///////////////////////////////////////////////////////////////////////////////
+             # Smem copy atom tiling
+             # ///////////////////////////////////////////////////////////////////////////////
+-            smem_copy_atom_QK = cute.make_copy_atom(
+-                warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4),
+-                self.dtype,
+-            )
+-            smem_copy_atom_V = cute.make_copy_atom(
+-                warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4),
+-                self.dtype,
+-            )
++            # ldmatrix comes in a 16-bit and an 8-bit flavour; the 8-bit
++            # transposing variant is what lets the FP8 PV gemm read V from
++            # the same (tile_n, head_dim_v) smem tile as the 16-bit path.
++            if const_expr(self.dtype.width == 8):
++                qk_ld_op = warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4)
++                v_ld_op = warp.LdMatrix16x8x8bOp(transpose=True, num_matrices=4)
++            else:
++                qk_ld_op = warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4)
++                v_ld_op = warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4)
++            smem_copy_atom_QK = cute.make_copy_atom(qk_ld_op, self.dtype)
++            smem_copy_atom_V = cute.make_copy_atom(v_ld_op, self.dtype)
+             smem_thr_copy_Q = utils.make_tiled_copy_A(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
+             smem_thr_copy_K = utils.make_tiled_copy_B(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
+             smem_thr_copy_V = utils.make_tiled_copy_B(smem_copy_atom_V, tiled_mma_pv).get_slice(tidx)
+diff --git a/flash_attn/cute/flash_fwd_sm120.py b/flash_attn/cute/flash_fwd_sm120.py
+index 52aef6f..27f8bdd 100644
+--- a/flash_attn/cute/flash_fwd_sm120.py
++++ b/flash_attn/cute/flash_fwd_sm120.py
+@@ -34,7 +34,12 @@ class FlashAttentionForwardSm120(FlashAttentionForwardSm80):
+ 
+         Same logic as SM80 but uses SM120's shared memory capacity (99 KB).
+         """
+-        if dtype not in [cutlass.Float16, cutlass.BFloat16]:
++        if dtype not in [
++            cutlass.Float16,
++            cutlass.BFloat16,
++            cutlass.Float8E4M3FN,
++            cutlass.Float8E5M2,
++        ]:
+             return False
+         if head_dim % 8 != 0:
+             return False
+@@ -44,10 +49,13 @@ class FlashAttentionForwardSm120(FlashAttentionForwardSm80):
+             return False
+         if num_threads % 32 != 0:
+             return False
++        if dtype.width == 8 and (head_dim % 32 != 0 or tile_n % 32 != 0):
++            return False
+         # Shared memory usage: Q tile + (K tile + V tile)
+-        smem_usage_Q = tile_m * head_dim * 2
+-        smem_usage_K = tile_n * head_dim * num_stages * 2
+-        smem_usage_V = tile_n * head_dim_v * num_stages * 2
++        elem_bytes = dtype.width // 8
++        smem_usage_Q = tile_m * head_dim * elem_bytes
++        smem_usage_K = tile_n * head_dim * num_stages * elem_bytes
++        smem_usage_V = tile_n * head_dim_v * num_stages * elem_bytes
+         smem_usage_QV = (
+             (smem_usage_Q + smem_usage_V) if not Q_in_regs else max(smem_usage_Q, smem_usage_V)
+         )
+diff --git a/flash_attn/cute/interface.py b/flash_attn/cute/interface.py
+index 7039389..3a4a375 100644
+--- a/flash_attn/cute/interface.py
++++ b/flash_attn/cute/interface.py
+@@ -925,7 +925,10 @@ def _flash_attn_fwd(
+ 
+     dtype = torch2cute_dtype_map[q_dtype]
+     if is_fp8:
+-        assert arch // 10 == 10, "FP8 is only supported on SM100 (compute capability 10.x) for FA4 CuTe."
++        assert arch // 10 in (8, 10, 12), (
++            "FP8 is supported on SM100 and, through the SM80-family kernel, "
++            "on SM8x / SM120."
++        )
+     use_block_sparsity = block_sparse_tensors is not None
+ 
+     causal, local, window_size_left, window_size_right = _resolve_causal_local_window(
+-- 
+2.39.5 (Apple Git-154)
+

@@ -927,7 +927,10 @@ def _flash_attn_fwd(
 
     dtype = torch2cute_dtype_map[q_dtype]
     if is_fp8:
-        assert arch // 10 == 10, "FP8 is only supported on SM100 (compute capability 10.x) for FA4 CuTe."
+        assert arch // 10 in (8, 10, 12), (
+            "FP8 is supported on SM100 and, through the SM80-family kernel, "
+            "on SM8x / SM120."
+        )
     use_block_sparsity = block_sparse_tensors is not None
 
     causal, local, window_size_left, window_size_right = _resolve_causal_local_window(

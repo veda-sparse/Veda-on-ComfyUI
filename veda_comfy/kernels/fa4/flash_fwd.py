@@ -647,11 +647,11 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
         the swizzle's conflict avoidance, which is a throughput question,
         not a correctness one.
         """
-        # 8 rows by one ldmatrix matrix: LdMatrix8x16x8bOp moves 8x16
-        # elements, and the tile has to be laid out in those units for the
-        # thread-value map to land on the right bytes. A wider row (the
-        # 128-byte swizzle period the 16-bit path uses) scrambles it.
-        k_block = min(k_dim, 16)
+        # 32 elements per row: V loads correctly through exactly this
+        # tile, while Q and K through a 128-element one do not, and 16
+        # leaves the gmem copy with a single 128-bit chunk per row, which
+        # its predicates cannot express.
+        k_block = min(k_dim, 32)
         return cute.make_ordered_layout((8, k_block), order=(1, 0))
 
     def _get_smem_layout_atom(self):

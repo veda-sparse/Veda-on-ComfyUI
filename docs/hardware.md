@@ -5,9 +5,9 @@
 
 | 硬件 | SM | kernel | Windows | Linux | 备注 |
 |---|---|---|---|---|---|
-| RTX 30（3090 等）、RTX A 系列 | sm86 | triton-int8 | 🧪 | 🧪 | |
+| RTX 30（3090 等）、RTX A 系列 | sm86 | triton-int8 | 🧪 | 🧪 | 静态审查过，见 int8_kernel.md |
 | A100 | sm80 | triton-int8 | — | 🧪 | |
-| RTX 40（4090 等）、L4 / L40、RTX 6000 Ada | sm89 | triton-int8 | 🧪 | 🧪 | |
+| RTX 40（4090 等）、L4 / L40、RTX 6000 Ada | sm89 | triton-int8 | 🧪 | 🧪 | 静态审查过，见 int8_kernel.md |
 | H100 / H200 | sm90 | triton-int8 | — | 🧪 | TMA 可用（有 cluster），尚未利用 |
 | B200 / GB200、B300 | sm100 / sm103 | triton-int8 | — | 🧪 | 同上 |
 | RTX 50（5090 等） | sm120 | triton-int8 | ✅（RTX 5070） | 🧪 | TMA 只能 `.shared::cta`，`num_ctas` 必须为 1 |
@@ -20,6 +20,13 @@
 
 ## 验证记录
 
+- 2026-10-03，**sm86（3090）/ sm89（4090）：只做了静态审查，没有上机**，所以上表仍是 🧪。
+  这条通路没有按架构分支（门槛只有 `cc >= (8, 0)`），TMA 默认关闭所以 SM90+ 的代码到不了，
+  用到的 MMA 都在 SM80 的指令集里，共享内存峰值约 88 KiB 而这两代的每 SM 预算是 100 KiB——
+  和已经验证过的 sm120 相同。详细推理与"还剩什么只能靠硬件回答"见
+  [features/int8_kernel.md](features/int8_kernel.md)。另外注意 Veda 论文和打分器 model card
+  里的 4090 数字来自 Miowtion 训练栈的 kernel，不是这里的 Triton INT8 kernel，不能当作本仓库
+  在 sm89 上的实测。
 - 2026-10-03，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，triton-windows
   3.8.0**，`triton-int8`：
   - `tests/gpu` 通过。`tools/compare_int8.py`（4096 token × 8 头 × 128，稠密）：对 fp32 参考

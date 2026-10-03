@@ -86,9 +86,37 @@ Blackwell 上的主要收益来自把一个 key tile **多播给 cluster 里的�
 所以 `USE_TMA = False`。代码留着：SM90 / SM100 有 cluster，很可能是赢的，但**没人在那上面跑过
 `tools/tune_int8.py`**，而发布一个没测过的默认值正是在自己看不见的硬件上变慢的办法。
 
+## 4090 / 3090（SM89 / SM86）：静态审查，未上机
+
+2026-10-03 按代码读了一遍这条通路在 sm89 / sm86 上会不会出问题。结论：**没有发现会挡住它的
+东西，但没有上机就不算验证**，`hardware.md` 里这两行仍然是 🧪。
+
+- **没有按架构分支**。`backends.candidates()` 的门槛只有 `info.cc >= (8, 0)`，不看 SM 家族；
+  kernel 里也没有 `cc` 分支。`hardware._FAMILIES` 有 `(8, 6)`/`(8, 9)`，所以节点上显示的是
+  `Triton INT8 (SM86)` / `(SM89)`，`_cuda_subtype` 给出 `rtx30` / `rtx40`。
+- **TMA 那条路到不了**。`_tma_available()` 第一个条件就是 `USE_TMA`，而它是 `False`，所以
+  只有 SM90 起才有的 `_attention_tma_kernel` 和 `tl.make_tensor_descriptor` 都不会被碰到。
+- **指令都在 SM80 的集合里**。`tl.dot` 的 int8 × int8 → int32 是 `mma.s8s8s32`（SM80 起），
+  `tl.dot(p.to(fp16), v, out_dtype=fp16)` 是 `mma.f16.f16.f16`（同样 SM80 起）。
+- **共享内存的预算在 SM120 上已经验证过**。循环里每一级是 K `[D=128, BLK=64]` int8 = 8 KiB
+  加 V `[64, 128]` fp16 = 16 KiB，3 级最多 72 KiB，再加循环外的 Q `[128, 128]` int8 = 16 KiB，
+  峰值约 88 KiB。关键在于 **sm86 / sm89 的每 SM 共享内存是 100 KiB，和 sm120 一样**
+  （sm80 是 164 KiB，更宽松），而这组 4 warps / 3 stages 正是在 sm120 上实测跑通并调出来的，
+  所以这不是一个未知数，是一个已经在同样预算下成立过的配置。
+
+剩下真正只能靠硬件回答的是两件事：Triton 在 sm86 / sm89 上实际分配的共享内存会不会越过
+每 block 99 KiB 的上限（越了的话是编译期 `OutOfResources`），以及 4 warps / 3 stages 在这两
+代上是不是还是最优（要用 `tools/tune_int8.py` 扫）。
+
+第一件事即使发生也不会坏图：`backends.resolve()` 把 `_load` 和 `self_test` 包在
+`except BackendUnavailable` / `except Exception` 里，失败会记进 `attempts`、写日志，并在节点上
+显示 `Veda off: no sparse kernel works on ...` 加原因，然后让模型跑自己的注意力。代价是没有
+加速，不是坏结果。
+
 ## 待做
 
-- 在 SM80 / SM89 / SM90 / SM100 上回归，并在有 cluster 的卡上扫一次 TMA，结果写进 hardware.md。
+- 在 SM80 / SM86 / SM89 / SM90 / SM100 上回归（4090 / 3090 目前只有上面那份静态审查），
+  并在有 cluster 的卡上扫一次 TMA，结果写进 hardware.md。
 - kernel 对"完美线性缩放"的理想值是 66% 效率（端到端 2.95 s/步 对 1.95 s）。整条注意力路径
   只占真实采样步的 31%，所以这件事排在换更大显存之后。
 

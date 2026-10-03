@@ -34,6 +34,8 @@ cannot reach this arithmetic at all on consumer cards.
 
 from __future__ import annotations
 
+import functools
+
 import torch
 import triton
 import triton.language as tl
@@ -43,6 +45,9 @@ TILE = 128
 KEY_BLOCK = 64
 SUB = TILE // KEY_BLOCK
 LOG2E = 1.4426950408889634
+# Set by tools/tune_int8.py to sweep launch options; None in production,
+# where recompiling on a user's machine would stall sampling.
+OVERRIDE = None
 
 
 @triton.jit
@@ -137,6 +142,92 @@ def _attention_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid, Out,
              + offs_d[None, :], acc.to(Out.type.element_ty))
 
 
+@triton.jit
+def _attention_tma_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
+                          Out, slots, stride_n, stride_h, stride_vn,
+                          stride_vh, stride_qs, stride_ks, stride_ih,
+                          stride_iq, n_q_tiles, D: tl.constexpr,
+                          BLK: tl.constexpr, BLOCK_M: tl.constexpr):
+    """The same attention, fetching K and V through TMA.
+
+    A block-sparse walk reads key blocks at addresses it only learns inside
+    the loop, so every iteration otherwise spends issue slots and registers
+    computing addresses for a copy the hardware could do on its own. TMA
+    takes a block coordinate instead, which is exactly the shape of this
+    loop.
+
+    `num_ctas` must stay 1. TMA's destination differs by architecture: SM90
+    and the datacenter Blackwells have thread block clusters and can target
+    `.shared::cluster` or multicast a tile to several CTAs, but consumer
+    Blackwell (SM120/121) has TMA without clusters and every bulk copy must
+    land in `.shared::cta`. Asking for a cluster there does not fall back
+    gracefully.
+    """
+    query_tile = tl.program_id(0)
+    head = tl.program_id(1)
+    offs_m = query_tile * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLK)
+    offs_d = tl.arange(0, D)
+
+    q = tl.load(Q + head * stride_h + offs_m[:, None] * stride_n
+                + offs_d[None, :])
+    q_scale = tl.load(Q_scale + head * stride_qs + query_tile)
+    # One descriptor per head, built once outside the loop; the loop then
+    # only varies the row coordinate.
+    k_desc = tl.make_tensor_descriptor(
+        K + head * stride_h, shape=[slots, D], strides=[stride_n, 1],
+        block_shape=[BLK, D])
+    v_desc = tl.make_tensor_descriptor(
+        V + head * stride_vh, shape=[slots, D], strides=[stride_vn, 1],
+        block_shape=[BLK, D])
+
+    m_i = tl.full([BLOCK_M], -1e30, dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, D], dtype=tl.float32)
+
+    count = tl.load(Count + head * n_q_tiles + query_tile)
+    index_row = Index + head * stride_ih + query_tile * stride_iq
+    for i in range(0, count):
+        block = tl.load(index_row + i)
+        start = block * BLK
+        k = k_desc.load([start, 0])
+        k_scale = tl.load(K_scale + head * stride_ks + block)
+        qk = tl.dot(q, tl.trans(k)).to(tl.float32) * q_scale * k_scale
+        qk = tl.where(offs_n[None, :] < tl.load(Valid + block), qk,
+                      -float('inf'))
+
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        p = tl.math.exp2(qk - m_ij[:, None])
+        alpha = tl.math.exp2(m_i - m_ij)
+        l_i = l_i * alpha + tl.sum(p, 1)
+        acc = acc * alpha[:, None]
+        acc += tl.dot(p.to(tl.float16), v_desc.load([start, 0]),
+                      out_dtype=tl.float16)
+        m_i = m_ij
+
+    l_i = tl.where(l_i > 0.0, l_i, 1.0)
+    acc = acc / l_i[:, None]
+    tl.store(Out + head * stride_h + offs_m[:, None] * stride_n
+             + offs_d[None, :], acc.to(Out.type.element_ty))
+
+
+@functools.cache
+def _tma_available(capability: tuple[int, int]) -> bool:
+    """TMA exists from SM90 on, and Triton must expose device descriptors."""
+    return capability[0] >= 9 and hasattr(tl, 'make_tensor_descriptor')
+
+
+@functools.cache
+def _install_allocator() -> None:
+    """Device-side descriptors need a scratch buffer from the caller."""
+    def allocate(size: int, alignment: int, stream):
+        del alignment, stream
+        return torch.empty(size, dtype=torch.int8, device='cuda')
+
+    triton.set_allocator(allocate)
+
+
+
 def key_blocks(index: torch.Tensor, count: torch.Tensor,
                valid_count: torch.Tensor):
     """Kept tiles -> kept key blocks, which is what the kernel walks.
@@ -177,14 +268,27 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     blocks, block_count, valid = key_blocks(index, count, valid_count)
     v16 = v.to(torch.float16)
     out = torch.empty_like(q)
-    _attention_kernel[(slots // TILE, heads)](
-        q_int8, k_int8, v16, q_scale, k_scale, blocks,
-        block_count, valid, out,
-        q.stride(0), q.stride(1), v16.stride(0), v16.stride(1),
-        q_scale.stride(0), k_scale.stride(0), blocks.stride(0),
-        blocks.stride(1),
-        n_q_tiles=slots // TILE, D=dim, BLK=KEY_BLOCK, BLOCK_M=TILE,
-        num_warps=8, num_stages=4)
+    common = (q_scale.stride(0), k_scale.stride(0), blocks.stride(0),
+              blocks.stride(1))
+    grid = (slots // TILE, heads)
+    options = dict(n_q_tiles=slots // TILE, D=dim, BLK=KEY_BLOCK,
+                   BLOCK_M=TILE, num_warps=8, num_stages=4)
+    use_tma = _tma_available(torch.cuda.get_device_capability(q.device))
+    if OVERRIDE is not None:  # tools/tune_int8.py sweeps these
+        use_tma = OVERRIDE['tma']
+        options.update(num_warps=OVERRIDE['num_warps'],
+                       num_stages=OVERRIDE['num_stages'])
+    if use_tma:
+        _install_allocator()
+        _attention_tma_kernel[grid](
+            q_int8, k_int8, v16, q_scale, k_scale, blocks, block_count,
+            valid, out, slots, q.stride(0), q.stride(1), v16.stride(0),
+            v16.stride(1), *common, **options)
+    else:
+        _attention_kernel[grid](
+            q_int8, k_int8, v16, q_scale, k_scale, blocks, block_count,
+            valid, out, q.stride(0), q.stride(1), v16.stride(0),
+            v16.stride(1), *common, **options)
     return out
 
 

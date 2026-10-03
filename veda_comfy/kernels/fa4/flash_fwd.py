@@ -79,7 +79,7 @@ def _reshape_acc_to_frgA_fp8(acc: cute.Tensor) -> cute.Tensor:
     view = cute.make_layout(
         ((2, 2, 2, 2), l.shape[1], l.shape[2][1]),
         stride=(
-            (stride_col, stride_tile, 2 * stride_tile, stride_row),
+            (stride_col, stride_tile, stride_row, 2 * stride_tile),
             l.stride[1],
             l.stride[2][1],
         ),

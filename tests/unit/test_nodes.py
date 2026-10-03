@@ -97,3 +97,42 @@ def test_execute_rejects_mismatched_models(node):
 def test_unknown_missing_predictor(node):
     with pytest.raises(ValueError, match='not in models/veda'):
         node.VedaSparseAttention.execute(_patcher(), 'gone.safetensors')
+
+
+def test_example_workflows_match_the_schema(node):
+    """The shipped templates carry one widget value per schema widget.
+
+    widgets_values is positional, so a stale extra entry does not raise:
+    it shifts every later widget. A leftover 'auto' from the removed
+    `backend` input silently turned `verbose` on in both templates.
+    """
+    import glob
+    import json
+    import os
+
+    from conftest import ROOT
+
+    schema = node.VedaSparseAttention.define_schema()
+    widgets = [i.id for i in schema.inputs if i.id != 'model']
+    paths = glob.glob(os.path.join(ROOT, 'example_workflows', '*.json'))
+    assert paths, 'no example workflows to check'
+    found = 0
+    for path in paths:
+        with open(path, encoding='utf-8') as f:
+            workflow = json.load(f)
+        nodes_ = list(workflow['nodes'])
+        for graph in workflow.get('definitions', {}).get('subgraphs', []):
+            nodes_ += graph.get('nodes', [])  # templates may be collapsed
+        for item in nodes_:
+            if item.get('type') != 'VedaSparseAttention':
+                continue
+            found += 1
+            values = item['widgets_values']
+            assert len(values) == len(widgets), (
+                f'{os.path.basename(path)}: {len(values)} values for '
+                f'{len(widgets)} widgets {widgets}')
+            assert values[widgets.index('verbose')] is False
+            models = item['properties']['models']
+            assert models[0]['directory'] == node.FOLDER
+            assert models[0]['name'] == values[widgets.index('predictor')]
+    assert found == len(paths), 'every template needs the Veda node'

@@ -92,8 +92,11 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int) -> dict:
                         'url': known.url('https://huggingface.co'),
                         'directory': 'veda'}],
         },
-        'widgets_values': [known.filename, '90%', '90%', '', '', 'auto',
-                           False],
+        # Positional, in schema order: predictor, generated_sparsity,
+        # reference_sparsity, full_attention_layers, full_attention_steps,
+        # verbose. One value per widget -- a stale extra entry does not
+        # error, it shifts every later widget by one.
+        'widgets_values': [known.filename, '90%', '90%', '', '', False],
     }
 
 

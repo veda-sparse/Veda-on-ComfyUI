@@ -258,10 +258,25 @@ def _attention_tma_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
              + offs_d[None, :], acc.to(Out.type.element_ty))
 
 
+# TMA is off by default, and the reason is a measurement rather than a
+# missing feature. On an RTX 5070 the TMA path is 15% slower than the
+# pointer path (186 vs 157 ms on a 119k-slot problem) even with K already
+# transposed so the loop has no shuffle. That fits the hardware: most of
+# TMA's advantage on Hopper and datacenter Blackwell comes from
+# multicasting one key tile to a cluster of CTAs, and consumer Blackwell
+# has TMA without thread block clusters, so a bulk copy there is just
+# another way to issue a copy -- and an 8 KB block is too small to pay
+# back the descriptor. On SM90 / SM100, where clusters exist, it may well
+# win; nobody has run tools/tune_int8.py on one yet, and shipping an
+# unmeasured default is how you end up slower on hardware you cannot see.
+USE_TMA = False
+
+
 @functools.cache
 def _tma_available(capability: tuple[int, int]) -> bool:
     """TMA exists from SM90 on, and Triton must expose device descriptors."""
-    return capability[0] >= 9 and hasattr(tl, 'make_tensor_descriptor')
+    return (USE_TMA and capability[0] >= 9
+            and hasattr(tl, 'make_tensor_descriptor'))
 
 
 @functools.cache

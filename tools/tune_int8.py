@@ -26,6 +26,8 @@ from veda_comfy.core import selection  # noqa: E402
 from veda_comfy.core import tiling  # noqa: E402
 from veda_comfy.kernels.sage import sparse_int8  # noqa: E402
 
+sparse_int8.USE_TMA = True  # the sweep decides, not the shipped default
+
 HEADS, DIM = 24, 128
 
 
@@ -73,8 +75,10 @@ def main() -> None:
           f'{HEADS} heads, {args.sparsity:g}% sparse')
     base = None
     for tma, warps, stages, key in itertools.product(
-            (False, True) if sparse_int8._tma_available(capability)
-            else (False,), (4, 8), (2, 3), (64, 128)):
+            (False, True) if hasattr(sparse_int8.tl,
+                                     'make_tensor_descriptor')
+            and capability[0] >= 9 else (False,),
+            (4, 8), (2, 3), (64, 128)):
         sparse_int8.OVERRIDE = dict(tma=tma, num_warps=warps,
                                     num_stages=stages, key_block=key)
         try:

@@ -638,38 +638,13 @@ class FlashAttentionForwardBase:
 
 
 class FlashAttentionForwardSm80(FlashAttentionForwardBase):
-    @staticmethod
-    def _plain_layout_atom(dtype, k_dim):
-        """Unswizzled smem atom for 1-byte operands.
-
-        The 8-bit ldmatrix atoms reject a composed (swizzled) source, so
-        FP8 operands get a plain row-major tile. Reads are then free of
-        the swizzle's conflict avoidance, which is a throughput question,
-        not a correctness one.
-        """
-        # 32 elements per row: V loads correctly through exactly this
-        # tile, while Q and K through a 128-element one do not, and 16
-        # leaves the gmem copy with a single 128-bit chunk per row, which
-        # its predicates cannot express.
-        k_block = min(k_dim, 32)
-        return cute.make_ordered_layout((8, k_block), order=(1, 0))
-
     def _get_smem_layout_atom(self):
-        if self.dtype.width == 8:
-            sQ_layout_atom = self._plain_layout_atom(self.dtype, self.tile_hdim)
-            sK_layout_atom = sQ_layout_atom
-            # V is transposed: its contiguous dim is tile_n, not head_dim_v.
-            sV_layout_atom = self._plain_layout_atom(self.dtype, self.tile_n)
-            return (
-                sQ_layout_atom,
-                sK_layout_atom,
-                sV_layout_atom,
-                sm80_utils.get_smem_layout_atom(self.out_dtype, self.tile_hdimv),
-                None,
-            )
         sQ_layout_atom = sm80_utils.get_smem_layout_atom(self.dtype, self.tile_hdim)
         sK_layout_atom = sQ_layout_atom
-        sV_layout_atom = sm80_utils.get_smem_layout_atom(self.dtype, self.tile_hdimv)
+        # A transposed V is contiguous along tile_n, so that is its k dim.
+        sV_layout_atom = sm80_utils.get_smem_layout_atom(
+            self.dtype, self.tile_n if self.v_transposed else self.tile_hdimv
+        )
         sO_layout_atom = (
             sV_layout_atom
             if self.out_dtype is self.dtype

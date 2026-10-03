@@ -970,12 +970,20 @@ class FlashAttentionForwardSm80(FlashAttentionForwardBase):
             # the same (tile_n, head_dim_v) smem tile as the 16-bit path.
             if const_expr(self.dtype.width == 8):
                 qk_ld_op = warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4)
-                v_ld_op = warp.LdMatrix16x8x8bOp(transpose=True, num_matrices=4)
+                # The transposing 8-bit ldmatrix wants a 128-bit aligned
+                # source, which a transposed view of a 1-byte tile cannot
+                # give. V therefore goes through a universal copy: more
+                # instructions for the load, but the MMA stays FP8.
+                smem_copy_atom_V = cute.make_copy_atom(
+                    cute.nvgpu.CopyUniversalOp(), self.dtype
+                )
             else:
                 qk_ld_op = warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4)
-                v_ld_op = warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4)
+                smem_copy_atom_V = cute.make_copy_atom(
+                    warp.LdMatrix8x8x16bOp(transpose=True, num_matrices=4),
+                    self.dtype,
+                )
             smem_copy_atom_QK = cute.make_copy_atom(qk_ld_op, self.dtype)
-            smem_copy_atom_V = cute.make_copy_atom(v_ld_op, self.dtype)
             smem_thr_copy_Q = utils.make_tiled_copy_A(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_K = utils.make_tiled_copy_B(smem_copy_atom_QK, tiled_mma_qk).get_slice(tidx)
             smem_thr_copy_V = utils.make_tiled_copy_B(smem_copy_atom_V, tiled_mma_pv).get_slice(tidx)

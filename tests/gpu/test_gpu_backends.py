@@ -91,9 +91,6 @@ def test_backend_matches_reference(device, name):
     assert err < 2e-2, f'{backend.name}: max error {err}'
 
 
-@pytest.mark.xfail(reason='FP8 operand smem layouts are still being '
-                          'brought up; see docs/features/fp8_kernel.md',
-                   strict=False)
 @pytest.mark.parametrize('device', _devices(), ids=str)
 def test_fp8_matches_reference_and_bf16(device):
     """The FP8 kernel is a precision variant, not a different attention.
@@ -110,27 +107,17 @@ def test_fp8_matches_reference_and_bf16(device):
     bf16 = _load(names[1], device)
     q, k, v, mask, layout = _problem(device)
     real = layout.slot_valid.bool()
-    want = reference.block_sparse_attention(q, k, v, mask, layout)[real]
+    want = reference.block_sparse_attention(q, k, v, mask, layout)[real].float()
     got = fp8.attend(q, k, v, mask, layout)[real].float()
     dense = bf16.attend(q, k, v, mask, layout)[real].float()
-    scale = want.float().abs().max().item()
-    # When this fails, the shape of the failure is what matters: zeros, a
-    # constant factor, or scrambled values each point somewhere different.
-    print(f'  want  norm {want.float().norm():.3f} absmax {scale:.3f} '
-          f'head {want.float().flatten()[:4].tolist()}')
-    print(f'  fp8   norm {got.norm():.3f} absmax '
-          f'{got.abs().max().item():.3f} head {got.flatten()[:4].tolist()}')
-    print(f'  bf16  norm {dense.norm():.3f} head '
-          f'{dense.flatten()[:4].tolist()}')
-    finite = got[got.abs() > 1e-6]
-    if finite.numel():
-        ratio = (got.abs().sum() / want.float().abs().sum()).item()
-        print(f'  sum|fp8| / sum|want| = {ratio:.4f}, '
-              f'nonzero {finite.numel()}/{got.numel()}')
-    err_fp8 = (got - want.float()).abs().max().item() / scale
-    err_bf16 = (dense - want.float()).abs().max().item() / scale
+    scale = want.abs().max().item()
+    err_fp8 = (got - want).abs().max().item() / scale
+    err_bf16 = (dense - want).abs().max().item() / scale
     rel = (got - dense).norm().item() / dense.norm().item()
     print(f'{fp8.name}: max err vs fp32 {err_fp8:.3%} '
           f'(bf16 kernel {err_bf16:.3%}), relative L2 vs bf16 {rel:.3%}')
+    # e4m3 keeps three mantissa bits, so a few percent is the floor; an
+    # order more than that is a layout fault, not quantization.
+    assert rel < 0.05, f'FP8 disagrees with the bf16 kernel by {rel:.1%}'
     assert err_fp8 < 0.10, f'FP8 output is off by {err_fp8:.1%}'
     base.self_test(fp8, device)

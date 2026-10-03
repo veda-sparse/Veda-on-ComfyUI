@@ -30,7 +30,7 @@
   缺失模型对话框可以一键下载。
 - **CI**（`.github/workflows/tests.yml`）：Linux / Windows / macOS 上安装 ComfyUI v0.38.2 +
   CPU torch，跑 `ruff` 与 `tests/unit`（含 ComfyUI 集成测试）；另一个 job 跑
-  `tools/vendor_fa4.py --check`。
+  `tools/fa4_upstream_diff.py`（检查 `UPSTREAM.diff` 是最新的）。
 - **发布**（`.github/workflows/publish_action.yml`）：main 上 `pyproject.toml` 变化时用 secret
   `REGISTRY_ACCESS_TOKEN` 发布（流程见 AGENTS.md 第 4 节）。
 

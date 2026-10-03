@@ -45,7 +45,7 @@
 
 - `tests/unit/test_settings_hardware_backends.py`：各 SM / 子型号的候选顺序、自检能识别"忽略
   掩码"和"结果错误"、torch 后端 CPU 自检、MPS 上 mlx / torch 自检。
-- `tests/unit/test_vendor_fa4_backends.py`：FA4 后端在没有 kernel 时给出安装提示、拒绝其他架构。
+- `tests/unit/test_fa4_fork.py`：FA4 后端在没有 kernel 时给出安装提示、拒绝其他架构。
 - `tests/gpu/test_gpu_backends.py`：每个在本机可加载的后端在 6000 token 问题上对齐参考实现。
 - `tools/bench_attention.py`：H3 真实形状的单层注意力测速（全注意力 vs Veda）。
 

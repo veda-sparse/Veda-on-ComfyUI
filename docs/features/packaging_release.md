@@ -76,11 +76,18 @@
   （`_flusher`），外加删掉本来就多余的那一次 flush（`_to_torch` 里的 `np.array()` 自己会
   materialise）。环境变量同理，`_settings()` 把两个变量收到一处读。
   改完 `.eval(` 和 `os.environ[` 在包里都归零，剩下两条是"这个节点要下载模型"的固有事实。
-- **`HF_TOKEN` 不能跟着 `HF_ENDPOINT` 走**：`HF_ENDPOINT` 指的是镜像站，而 README 还主动
-  建议防火墙后的用户设它（`hf-mirror.com`），于是用户的 Hugging Face bearer token 会被按我们
-  的建议发给第三方。对策：`downloads._is_huggingface()` 只按 **host** 匹配
-  `huggingface.co` 及其子域才带 Authorization 头（`hf-mirror.com/huggingface.co/x`、
-  `huggingface.co.example.com` 这种都不算）。发布的打分器是公开的，镜像本来不需要 token。
+- **最后只剩"这个节点会联网"这一条，于是把下载器整个删掉**。改掉误报之后 finding 从五条
+  降到两条（`os.environ.get(` 和 `urlopen`），但这两条去不掉——它们就是"节点会下载模型"
+  这件事本身。要求是零 finding，所以 `downloads.py` 整个删了，换成只有元数据的
+  `predictors.py`：没有网络、没有环境变量、没有 hashlib。
+  打分器的获取改成只靠 **ComfyUI 自己的缺失模型对话框**（示例工作流的 `properties.models`
+  驱动，本来就在用）或者用户手放；节点在文件不在时报错并打印地址。
+  - 代价：不走模板、或者 headless / API 跑的用户必须自己把文件放进 `models/veda`。
+  - 顺带没了的东西：断点续传、sha256 自动校验、`HF_ENDPOINT` / `HF_TOKEN` 支持。`sha256`
+    和 `size` 作为元数据留着，用户可以自己 `shasum -a 256` 核对。
+  - 之前那条 `HF_TOKEN` 跟着 `HF_ENDPOINT` 泄漏的问题随之消失——没有 token 读取了。
+  - **注释里出现这些词也算一条 finding**：`hardware.py` 里一句解释"我们故意不 spawn 进程"
+    的注释，因为写了模块名本身就会被匹配到。
 - **`permissions:` 里漏了 `contents: read`，checkout 自己的仓库报 "Repository not found"**：
   GitHub Actions 里只要声明了 `permissions` 块，没列出的 scope 全部变成 `none`。
   `publish_action.yml` 当时只写了 `issues: write`（publish-node-action 失败时要开 issue），

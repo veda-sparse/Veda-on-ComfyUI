@@ -64,7 +64,8 @@
 - `veda_comfy/nodes.py`：schema、校验（模型类型、层数 / 头数与打分器一致、下标范围）、
   打分器解析与下载、就绪状态。
 - `veda_comfy/comfy_patch.py`：`VedaPatch`（override、拒绝原因、统计、生命周期）与 `apply()`。
-- `veda_comfy/status.py`、`veda_comfy/downloads.py`、`veda_comfy/settings.py`。
+- `veda_comfy/status.py`、`veda_comfy/predictors.py`（纯元数据，不联网）、
+  `veda_comfy/settings.py`。
 
 ## 测试
 
@@ -72,7 +73,8 @@
   模型）跑 T2VA / FL2VA / R2VA：全保留预算必须复现全注意力（1e-4）；90% 稀疏时每个 block 都走
   稀疏路径；reference 段数正确；`full_attention_*` 生效；拒绝的调用到达之前的 override。
 - `tests/unit/test_nodes.py`：schema（只有 model / predictor 可见）、各种错误信息、patch 安装。
-- `tests/unit/test_downloads.py`：断点续传、sha256 校验、错误信息。
+- `tests/unit/test_predictors.py`：发布元数据被钉死（完整 commit、sha256）、URL 指向该
+  revision、缺文件时的提示包含地址，以及**模块里不出现网络/环境变量字样**。
 
 ## 踩坑记录
 

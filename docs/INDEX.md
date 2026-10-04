@@ -5,7 +5,7 @@ feature 文档的「踩坑记录」，并在 `pitfalls.md` 加一行索引。
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| [features/comfyui_node.md](features/comfyui_node.md) | 节点、attention override 接入、用户交互（状态文字、回退、下载）、设置语义 | CPU 集成测试通过（ComfyUI 0.38）；真实 ComfyUI server 加载验证 |
+| [features/comfyui_node.md](features/comfyui_node.md) | 节点、attention override 接入、用户交互（状态文字、回退、打分器获取）、设置语义 | CPU 集成测试通过（ComfyUI 0.38）；真实 ComfyUI server 加载验证 |
 | [features/core_selection.md](features/core_selection.md) | H3 布局映射、tile 排列、方案表选择、打分、generated / reference 预算与选择规则、引擎 | CPU 测试通过 |
 | [features/backends.md](features/backends.md) | 后端契约、自检、容差、一个设备一个 kernel | mlx 在 MPS 通过；CUDA 见 hardware.md |
 | [features/int8_kernel.md](features/int8_kernel.md) | Triton INT8 块稀疏 kernel：为什么是 INT8 不是 FP8、为什么没有 fallback、设计与性能 | RTX 5070 验证通过；TMA 已实测更慢，默认关闭 |

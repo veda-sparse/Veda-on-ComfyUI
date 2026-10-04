@@ -51,15 +51,15 @@ block，Veda 根本不会被调用。节点检测到两者同时存在时会提�
 
 ### 打分器
 
-第一次使用时节点会把打分器下载到 `models/veda`（275 MB，支持断点续传并校验 sha256），
-并编译一次 kernel。
+节点自己不下载任何东西。打分器（275 MB）进入 `models/veda` 有两种方式：
 
-想手动放：从[打分器仓库](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
-下载 `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`，放进
-`ComfyUI/models/veda/`，刷新 ComfyUI 即可。该目录下任何 `.safetensors` 都会出现在
-`predictor` 列表里，所以自己训练的打分器也是一样选。国内网络：启动 ComfyUI 前设置
-`HF_ENDPOINT`（例如 `https://hf-mirror.com`）。私有仓库支持 `HF_TOKEN`，但它只会发给
-huggingface.co，不会跟着 `HF_ENDPOINT` 去镜像站。
+* **用模板**：打开任一 Veda 模板，ComfyUI 会在缺失模型对话框里给出打分器，点一下就下好。
+* **手动放**：从[打分器仓库](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
+  下载 `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`，放进
+  `ComfyUI/models/veda/`，重启 ComfyUI。
+
+该目录下任何 `.safetensors` 都会出现在 `predictor` 列表里，所以自己训练的打分器也是一样选。
+选中的文件不在时，节点会说明并打印下载地址，而不会自己去联网。
 
 ### 节点上的文字
 

@@ -30,7 +30,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from veda_comfy import downloads  # noqa: E402
+from veda_comfy import predictors  # noqa: E402
 
 OUT = os.path.join(ROOT, 'example_workflows')
 NODE_TYPE = 'VedaSparseAttention'
@@ -47,8 +47,9 @@ the speed-up growing with length.
 
 * Placement: it is an attention override, so it sits on the MODEL wire
   after the model and any LoRA loaders, last before the guider.
-* First run: the predictor (~275 MB) is downloaded into `models/veda`, and
-  the kernels compile once. The node shows which kernel it uses.
+* First run: ComfyUI offers the predictor (~275 MB) in the missing models
+  dialog; it goes into `models/veda`. The kernels then compile once, and
+  the node shows which one it uses.
 * Compare: select the Veda node and press **Ctrl+B** (bypass) to render the
   same seed with full attention.
 * Trained sizes: 1344x768, 768x1344, 768x768, 1024x768 at 5 / 10 / 14 s.
@@ -71,7 +72,7 @@ def _templates_dir(path: str | None) -> str:
 
 
 def _veda_node(node_id: int, pos, in_link: int, out_link: int) -> dict:
-    known = downloads.KNOWN_PREDICTORS[downloads.DEFAULT_PREDICTOR]
+    known = predictors.KNOWN_PREDICTORS[predictors.DEFAULT_PREDICTOR]
     return {
         'id': node_id, 'type': NODE_TYPE, 'pos': list(pos),
         'size': [420, 110], 'flags': {}, 'order': 0, 'mode': 0,
@@ -88,8 +89,9 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int) -> dict:
         'properties': {
             'cnr_id': REGISTRY_ID, 'ver': _version(),
             'Node name for S&R': NODE_TYPE,
-            'models': [{'name': known.filename,
-                        'url': known.url('https://huggingface.co'),
+            # ComfyUI's missing-model dialog reads this, and it is now
+            # the only thing that fetches the predictor for the user.
+            'models': [{'name': known.filename, 'url': known.url,
                         'directory': 'veda'}],
         },
         # Positional, in schema order: predictor, generated_sparsity,

@@ -44,7 +44,7 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
   | `veda` | `veda_comfy/core`、`settings.py`、`hardware.py` |
   | `backends` | `veda_comfy/backends/*`（一次只改一个后端时写成 `backends/triton-int8:` 也可以） |
   | `kernels` | `veda_comfy/kernels/*` |
-  | `comfy` | `nodes.py`、`comfy_patch.py`、`status.py`、`downloads.py`、示例工作流 |
+  | `comfy` | `nodes.py`、`comfy_patch.py`、`status.py`、`predictors.py`、示例工作流 |
   | `install` | `requirements.txt`、`pyproject.toml` 的 `dependencies` |
   | `release` | `pyproject.toml` 版本号与发布 |
   | `tests` / `tools` / `docs` | 只改这些目录时 |
@@ -140,7 +140,7 @@ veda_comfy/
   nodes.py           ComfyUI 节点定义（唯一 import comfy_api 的地方）
   comfy_patch.py     attention override、生命周期回调、运行统计
   status.py          节点状态文字
-  downloads.py       打分器下载（锁定 revision 与 sha256）
+  predictors.py      已发布打分器的元数据（repo / revision / sha256 / 大小）；不联网
   settings.py        用户设置与解析
   hardware.py        设备 / SM 家族 / 子型号
   core/              tiling / plans / bundle / predictor / selection / h3_layout /
@@ -175,8 +175,13 @@ docs/                知识库
   - 曾经这里是一份 FA4 CuTe fork 加一套补丁/provenance 工具。教训：**生成出来的代码很难改**。
     一次 sha256 更新的正则静默失配，三轮 GPU 测的都是旧 kernel。能直接写就直接写。
 - 移植的小段外部代码要在旁边注明来源与许可证（需与 MIT 兼容）；第三方声明写进 `NOTICE.md`。
-- 模型权重不进仓库；打分器在运行时下载（`downloads.KNOWN_PREDICTORS` 锁定 repo、revision、
-  sha256、大小）。发布新的打分器 = 在那里加一项，并更新示例工作流。
+- 模型权重不进仓库。**节点自己不下载任何东西**：打分器由 ComfyUI 的缺失模型对话框获取
+  （示例工作流的 `properties.models` 驱动），或者用户手放。`predictors.KNOWN_PREDICTORS`
+  只存元数据（repo、revision、sha256、大小）。发布新的打分器 = 在那里加一项，并重新生成
+  示例工作流。
+- **包里不允许出现网络调用和环境变量读取**：Comfy Registry 的扫描器是 YARA 文本匹配，
+  `urlopen`、`os.environ`、`subprocess`、`.eval(` 之类一出现就是一条 finding——注释里出现
+  也算。`tests/unit/test_predictors.py` 会检查这一点。
 
 ## 4. 打包与发布（Comfy Registry）
 

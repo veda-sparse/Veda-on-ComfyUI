@@ -15,14 +15,13 @@ import threading
 
 import comfy.model_management
 import comfy.patcher_extension
-import comfy.utils
 import folder_paths
 from comfy_api.latest import ComfyExtension, io
 
 from . import backends
 from . import comfy_patch
-from . import downloads
 from . import hardware
+from . import predictors
 from . import settings as veda_settings
 from . import status as veda_status
 from .core import bundle as veda_bundle
@@ -33,7 +32,7 @@ _BUNDLE_LOCK = threading.Lock()
 
 
 def register_model_folder() -> str:
-    """Registers models/veda (only .safetensors, so partial downloads and
+    """Registers models/veda (only .safetensors, so stray files and
     stray files never show up in the list)."""
     path = os.path.join(folder_paths.models_dir, FOLDER)
     entry = folder_paths.folder_names_and_paths.get(FOLDER)
@@ -53,29 +52,27 @@ def register_model_folder() -> str:
 
 def _predictor_options() -> list[str]:
     local = folder_paths.get_filename_list(FOLDER)
-    return list(local) + [n for n in downloads.KNOWN_PREDICTORS
+    return list(local) + [n for n in predictors.KNOWN_PREDICTORS
                           if n not in local]
 
 
-def _predictor_path(name: str, node_id: str | None) -> str:
-    """Local path of a predictor, downloading a known release if missing."""
+def _predictor_path(name: str) -> str:
+    """Local path of a predictor.
+
+    Raises:
+        ValueError: If the file is not there, with how to get it. The node
+            does not fetch it: ComfyUI's missing-model dialog does that,
+            driven by `properties.models` in the example workflows.
+    """
     path = folder_paths.get_full_path(FOLDER, name)
     if path is not None:
         return path
-    known = downloads.KNOWN_PREDICTORS.get(name)
-    if known is None:
-        raise ValueError(f'Predictor {name!r} is not in models/{FOLDER}. '
-                         'Pick another file or put it there.')
-    status = veda_status.NodeStatus(node_id)
-    # Decimal MB, so the number matches what Hugging Face and the README
-    # quote (263 MiB would read as a different, smaller file).
-    status.show(f'Downloading {name} ({known.size / 10**6:.0f} MB, once)')
-    bar = comfy.utils.ProgressBar(known.size, node_id=node_id)
     folder = folder_paths.get_folder_paths(FOLDER)[0]
-    path = downloads.fetch(known, folder,
-                           lambda done, total: bar.update_absolute(done,
-                                                                   total))
-    return path
+    known = predictors.KNOWN_PREDICTORS.get(name)
+    if known is None:
+        raise ValueError(f'Predictor {name!r} is not in {folder}. '
+                         'Pick another file or put it there.')
+    raise ValueError(predictors.how_to_get(known, folder))
 
 
 def _bundle(path: str) -> veda_bundle.PredictorBundle:
@@ -119,7 +116,7 @@ class VedaSparseAttention(io.ComfyNode):
 
     @classmethod
     def define_schema(cls):
-        default = downloads.DEFAULT_PREDICTOR
+        default = predictors.DEFAULT_PREDICTOR
         return io.Schema(
             node_id='VedaSparseAttention',
             display_name='Veda Sparse Attention (MiniMax H3)',
@@ -183,8 +180,8 @@ class VedaSparseAttention(io.ComfyNode):
         node_id = getattr(hidden, 'unique_id', None)
         status = veda_status.NodeStatus(node_id)
         try:
-            bundle = _bundle(_predictor_path(predictor, node_id))
-        except (veda_bundle.BundleError, downloads.DownloadError) as error:
+            bundle = _bundle(_predictor_path(predictor))
+        except veda_bundle.BundleError as error:
             raise ValueError(str(error)) from error
         num_layers, _, _ = _check_model(model, bundle)
         settings = veda_settings.VedaSettings(

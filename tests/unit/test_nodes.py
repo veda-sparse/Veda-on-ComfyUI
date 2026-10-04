@@ -95,8 +95,19 @@ def test_execute_rejects_mismatched_models(node):
 
 
 def test_unknown_missing_predictor(node):
-    with pytest.raises(ValueError, match='not in models/veda'):
+    with pytest.raises(ValueError, match='Pick another file'):
         node.VedaSparseAttention.execute(_patcher(), 'gone.safetensors')
+
+
+def test_known_missing_predictor_says_how_to_get_it(node):
+    """The node no longer downloads, so the error has to do the work."""
+    from veda_comfy import predictors
+    name = predictors.DEFAULT_PREDICTOR
+    with pytest.raises(ValueError) as caught:
+        node.VedaSparseAttention.execute(_patcher(), name)
+    message = str(caught.value)
+    assert predictors.KNOWN_PREDICTORS[name].url in message
+    assert 'Browse Templates' in message
 
 
 def test_example_workflows_match_the_schema(node):

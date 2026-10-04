@@ -61,18 +61,20 @@ called. The node says so when it sees both.
 
 ### Predictor
 
-On first use the node downloads the predictor into `models/veda`
-(275 MB, resumable and sha256-verified) and compiles the kernels once.
+The node does not download anything itself. The predictor (275 MB)
+reaches `models/veda` one of two ways:
 
-To place it by hand, download
-`minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors` from the
-[predictor repository](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
-into `ComfyUI/models/veda/` and refresh ComfyUI. Any `.safetensors` in
-that folder appears in the `predictor` list, so a predictor trained
-elsewhere is selected the same way. Behind a firewall, set `HF_ENDPOINT`
-(for example `https://hf-mirror.com`) before starting ComfyUI. `HF_TOKEN`
-is honoured too, but it is only ever sent to huggingface.co and never
-follows `HF_ENDPOINT` to a mirror.
+* **From a template.** Open one of the Veda templates and ComfyUI offers
+  the predictor in its missing-models dialog; one click fetches it.
+* **By hand.** Download
+  `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors` from the
+  [predictor repository](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
+  into `ComfyUI/models/veda/` and restart ComfyUI.
+
+Any `.safetensors` in that folder appears in the `predictor` list, so a
+predictor trained elsewhere is selected the same way. If the selected
+file is not there, the node says so and prints the URL rather than
+reaching out on its own.
 
 ### Node text
 

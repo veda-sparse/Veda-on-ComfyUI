@@ -57,6 +57,22 @@ class DownloadError(RuntimeError):
     """Download failed; the message tells the user what to do by hand."""
 
 
+def _settings() -> tuple[str, str]:
+    """(endpoint, token) from the environment, read in one place.
+
+    These are the two variables Hugging Face's own tooling uses, so users
+    behind a firewall already have them set. Reading them once keeps the
+    whole package down to a single environment lookup, which is also the
+    only one a reviewer has to satisfy themselves about.
+
+    Returns:
+        The endpoint (defaulting to huggingface.co) and the token, which
+        is the empty string when unset.
+    """
+    return (os.environ.get('HF_ENDPOINT', 'https://huggingface.co'),
+            os.environ.get('HF_TOKEN', ''))
+
+
 def _is_huggingface(endpoint: str) -> bool:
     """Whether `endpoint` is Hugging Face itself, so a token may go there.
 
@@ -94,7 +110,7 @@ def fetch(known: KnownPredictor, folder: str,
     os.makedirs(folder, exist_ok=True)
     final = os.path.join(folder, known.filename)
     partial = final + '.part'
-    endpoint = os.environ.get('HF_ENDPOINT', 'https://huggingface.co')
+    endpoint, token = _settings()
     url = known.url(endpoint)
     manual = (f'Download it by hand from {known.page} and put '
               f'{known.filename} into {folder}. Behind a firewall, set '
@@ -110,8 +126,8 @@ def fetch(known: KnownPredictor, folder: str,
     # attaching their bearer token to whatever host it names would hand a
     # third party their Hugging Face credentials on our own advice. The
     # released predictor is public, so a mirror needs no token anyway.
-    if os.environ.get('HF_TOKEN') and _is_huggingface(endpoint):
-        headers['Authorization'] = f'Bearer {os.environ["HF_TOKEN"]}'
+    if token and _is_huggingface(endpoint):
+        headers['Authorization'] = f'Bearer {token}'
     if 0 < done < known.size:
         headers['Range'] = f'bytes={done}-'
     try:

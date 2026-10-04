@@ -1,6 +1,6 @@
 [project]
 name = "veda-sparse-attention"
-version = "0.1.1"
+version = "0.2.0"
 description = "Veda learned sparse attention for MiniMax-H3 in ComfyUI: ~2-3x faster T2VA / FL2VA / R2VA video+audio generation, LoRA-compatible. NVIDIA (Triton INT8, SM80 and newer, Linux / Windows) and Apple silicon (MLX)."
 license = { file = "LICENSE" }
 readme = "README.md"

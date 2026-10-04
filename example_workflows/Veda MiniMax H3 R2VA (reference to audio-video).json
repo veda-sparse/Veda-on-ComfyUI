@@ -1420,7 +1420,7 @@
    ],
    "properties": {
     "cnr_id": "veda-sparse-attention",
-    "ver": "0.1.1",
+    "ver": "0.2.0",
     "Node name for S&R": "VedaSparseAttention",
     "models": [
      {

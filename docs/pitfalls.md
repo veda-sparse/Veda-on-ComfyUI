@@ -17,3 +17,4 @@
 | 改一行 description 就触发了一次 registry 发布 | 发布 workflow 的触发条件是 `paths: pyproject.toml`，不是版本号变化 | job 里和 `HEAD~1` 比一次 `version`，不同才发布 | [packaging_release](features/packaging_release.md) |
 | 节点里有 `__import__(...)` 行内调用和 `subprocess.run` | 本意只是懒得写顶部 import、想要个好看的 CPU 名字，但这两种形状正是 registry 安全审核要找的东西 | 顶部 `import sys`；subprocess 整个删掉，用 `platform.processor()` | [packaging_release](features/packaging_release.md) |
 | 用户的 `HF_TOKEN` 会被发给 `HF_ENDPOINT` 指定的镜像站 | 下载时无条件附带 Authorization 头，而 README 主动建议设 `HF_ENDPOINT=hf-mirror.com` | 只在 endpoint 的 host 是 `huggingface.co`（或其子域）时才带 token | [packaging_release](features/packaging_release.md) |
+| registry 把版本标成 `Flagged`，五条 finding 全是 `info` | 扫描器是 YARA 字符串匹配：`mx.eval(` 被当成 Python 的动态执行，`os.environ[` 被当成凭据读取 | MLX 的 flush 走具名 helper `_flusher` 并删掉多余的那次，环境变量收到 `_settings()` 一处读；网络和环境那两条是功能固有，留着向审核解释 | [packaging_release](features/packaging_release.md) |

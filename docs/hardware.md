@@ -56,6 +56,9 @@
     只看注意力是 31.1 → 15.2 → 4.41。Veda 的 4.41 s/步里 kernel 2.95、gather 0.66、打分 0.46、
     scatter 0.23、选块 0.10。这一步剩下的 9.6 s 是 MLP 与 12 GB 显存下的权重搬运，占 69%——
     注意力侧的全部开销（1.46 s）清零也只有 1.11x，所以优化重心不在这里。
+- 2026-10-04，Apple M3 Pro（macOS），torch 2.14.1 + MLX 0.32.3：`tests/gpu` 2 passed /
+  1 skipped（INT8 对照需要 CUDA），`tests/unit` 96 passed。覆盖的是把 `mx.eval` 收进
+  `_flusher` 并删掉 `_to_torch` 前那次多余 flush 的改动——Metal 自检与 fp32 参考比对都过。
 - 2026-10-03，Apple M3 Pro（macOS 15），torch 2.14.1 + MLX 0.32.3：mlx 后端在 MPS 自检通过。
   `tools/bench_attention.py`（16:9，latent_t 37，38 228 token，90% 稀疏，随机打分器，单层）：
   MPS SDPA 全注意力 9.29 s；mlx 后端 3.52 s（2.64x）。

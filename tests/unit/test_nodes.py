@@ -147,3 +147,52 @@ def test_example_workflows_match_the_schema(node):
             assert models[0]['directory'] == node.FOLDER
             assert models[0]['name'] == values[widgets.index('predictor')]
     assert found == len(paths), 'every template needs the Veda node'
+
+
+def _bypassing(attn):
+    del attn  # a real replacement closes over it
+
+    def minimax_sageattn_forward(x, rope_freqs=None, transformer_options={}):
+        raise AssertionError('not called in these tests')
+    return minimax_sageattn_forward
+
+
+def _capture(monkeypatch):
+    from veda_comfy import status
+    shown = []
+    monkeypatch.setattr(status.NodeStatus, 'show',
+                        lambda self, text, level=0: shown.append(text))
+    return shown
+
+
+def test_execute_takes_over_a_forward_replacement_before_it(node,
+                                                            monkeypatch):
+    shown = _capture(monkeypatch)
+    model = _patcher()
+    diffusion = model.get_model_object('diffusion_model')
+    for i, block in enumerate(diffusion.blocks):
+        model.add_object_patch(f'diffusion_model.blocks.{i}.attn.forward',
+                               _bypassing(block.attn))
+    out = node.VedaSparseAttention.execute(model,
+                                           'tiny.safetensors').result[0]
+    for i in range(len(diffusion.blocks)):
+        key = f'diffusion_model.blocks.{i}.attn.forward'
+        assert out.object_patches[key]._uses_optimized_attention
+    assert 'Took over the attention from "MiniMax H3 Mem Eff Sage ' \
+        'Attention Patch" (KJNodes)' in shown[-1]
+
+
+def test_a_forward_replacement_after_veda_is_reported(node, monkeypatch):
+    import comfy.patcher_extension
+    shown = _capture(monkeypatch)
+    out = node.VedaSparseAttention.execute(_patcher(),
+                                           'tiny.safetensors').result[0]
+    later = out.clone()
+    block = later.get_model_object('diffusion_model').blocks[0]
+    later.add_object_patch('diffusion_model.blocks.0.attn.forward',
+                           _bypassing(block.attn))
+    prepare = later.get_all_callbacks(
+        comfy.patcher_extension.CallbacksMP.ON_PREPARE_STATE)
+    for callback in prepare:
+        callback(later, None, later.model_options)
+    assert shown[-1].startswith('Veda is not running: "MiniMax H3 Mem Eff')

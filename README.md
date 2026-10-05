@@ -59,6 +59,14 @@ Do not combine it with ComfyUI's own "Model Sparse Attention" node on H3:
 that one replaces the attention blocks outright, so Veda would never be
 called. The node says so when it sees both.
 
+Other attention nodes can stay. Veda runs on top of "Patch Sage Attention
+KJ" (the calls it does not take go to sage), and KJNodes' "MiniMax H3 Low
+VRAM Attention" keeps working. A node that swaps out the whole H3
+attention, such as "MiniMax H3 Mem Eff Sage Attention Patch", must come
+*before* Veda: Veda then runs the sparse layers and leaves that node the
+full-attention ones, and says so on its node. Placed after Veda it would
+hide every call from Veda; the node warns about that too.
+
 ### Predictor
 
 The node does not download anything itself. The predictor (275 MB)

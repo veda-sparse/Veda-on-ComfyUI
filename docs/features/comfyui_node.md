@@ -12,8 +12,8 @@
   所以节点 description 和文档统一用 attention override，并照 `Model Sparse Attention` 的句式写：
   先说做什么，再说放哪里，最后说什么时候不生效。放置位置这一句上游核心节点都不写，但 H3 相关的
   官方教程、KJNodes 的 `Patch * Attention KJ`、`ComfyUI-H3-SLA-Attention` 都写，用户确实需要：
-  **MODEL 线上，模型与 LoRA 加载之后、sampler / guider 之前**。顺序对其他注意力节点不敏感
-  （override 是叠上去的，见下），只有 LoRA 必须在前。
+  **MODEL 线上，模型与 LoRA 加载之后、sampler / guider 之前**。顺序对走 override 的注意力节点
+  不敏感（override 是叠上去的，见下）；LoRA 和整个替换注意力 forward 的节点必须在前（见下）。
 - **category 是 `model/patch/minimax`**，和 ComfyUI 自带的 `ModelSamplingMiniMaxH3`、
   `Apply MiniMax H3 Fun ControlNet` 同一层，用户找 H3 的补丁节点时在一起。输入名 `model`
   （小写，`MODEL` 是 `io.Model` 渲染出来的接口类型，不是输入名）与输出 `display_name='model'`
@@ -34,6 +34,20 @@
   后画质悄悄变差而不是报错）。所以 `install` 每一步把请求挪到 `veda_held_head_chunks`、把
   `minimax_head_chunks` 置 1：forward 一次交出全部头，稀疏路径自己按显存分块；Veda 不处理的调用
   在 override 里照 KJ 的公式分组调用，保住它省显存的效果。分组只是按头切开，结果逐位相同。
+- **整个替换注意力 forward 的节点：在 Veda 之前就接管，在之后就报出来。** KJNodes 的
+  "MiniMax H3 Mem Eff Sage Attention Patch" 用 `add_object_patch` 把
+  `blocks.N.attn.forward` 换成直接调 sage 的 forward，根本不经过 `optimized_attention`，
+  Veda 只在执行节点时显示一次 ready，之后一个调用也收不到（用户看到的是"没有下文、还更慢"）。
+  - 在 Veda 之前：节点执行时找出这类 object patch（KJ 的约定：仍调 `optimized_attention` 的
+    forward 带 `_uses_optimized_attention`，带了就不动），按 block 换成路由 forward。Veda 可能
+    稀疏的 block（`_block_reason` 只看采样前就知道的条件：层、步、出错、无 kernel）走调用
+    override 的 forward——优先用 KJ Low VRAM 节点留在 `sol_take_forward` 的那个，否则用
+    ComfyUI 的原生 forward；其余 block 仍交给被替换的 forward（并把按头分组的请求还给它）。
+    节点上用 warning 说明接管了谁，verbose 再写稀疏层走的是哪个 forward。
+  - 在 Veda 之后：object patch 是在 Veda 之后才加的，Veda 已无法改。每一步
+    （`ON_PREPARE_STATE`）检查采样用的 patcher，发现就在节点上警告"把 Veda 移到它后面"。
+  - 兜底：一次采样结束、Veda 一个 H3 调用都没收到时，节点警告 "Veda did not run"。以后再出现
+    新的绕开方式，也不会再是静默。
 - ComfyUI 自带的 "Model Sparse Attention" 在 H3 上用 block patch 直接替换注意力，Veda 的
   override 就不会被调用；节点检测到它时给出警告，而不是静默无效。
 - **不坏图**：稀疏路径里的任何异常（OOM、kernel 失败）都被捕获，提示后本次运行剩余部分走全注意力；
@@ -79,7 +93,10 @@
   模型）跑 T2VA / FL2VA / R2VA：全保留预算必须复现全注意力（1e-4）；90% 稀疏时每个 block 都走
   稀疏路径；reference 段数正确；`full_attention_*` 生效；拒绝的调用到达之前的 override；
   照 KJNodes Low VRAM 节点按头分组的 forward 下仍然每层稀疏、结果与不分组相同，拒绝的调用
-  仍按头分组。
+  仍按头分组；绕开 override 的 forward 会让运行结束时警告，路由后的 forward 让稀疏层走 Veda、
+  全注意力层回到被替换的 forward（含 `sol_take_forward` 的情形）。
+- `tests/unit/test_nodes.py` 另测：节点执行时接管在它之前的 forward 替换，并在节点上说明；
+  在它之后的替换由 `ON_PREPARE_STATE` 报出来。
 - `tests/unit/test_nodes.py`：schema（只有 model / predictor 可见）、各种错误信息、patch 安装。
 - `tests/unit/test_predictors.py`：发布元数据被钉死（完整 commit、sha256）、URL 指向该
   revision、缺文件时的提示包含地址，以及**模块里不出现网络/环境变量字样**。
@@ -117,6 +134,10 @@
 - **KJNodes "MiniMax H3 Low VRAM Attention" 让 Veda 关掉**：节点显示 "Veda off: the model has
   14 heads of dim 128, the predictor expects 56 x 128"（`head_chunks=4`；6 组时是 10/9，最后显示
   9）。原因：它按头分组调用注意力，Veda 每次只看到一组头。对策见上「按头分组由 Veda 接管」。
+
+- **KJNodes "MiniMax H3 Mem Eff Sage Attention Patch" 让 Veda 静默失效**：节点只显示 ready，
+  之后没有任何文字，渲染还变慢（全程是 sage 的全注意力）。原因：它整个替换了 `attn.forward`，
+  不经过 override；而 Veda 只在收到调用时才说话。对策见上「整个替换注意力 forward 的节点」。
 
 ## 验证记录
 

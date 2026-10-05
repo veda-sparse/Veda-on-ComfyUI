@@ -111,6 +111,11 @@ def _other_sparse_node(model) -> bool:
     return 'block_sparse_attention' in prepare
 
 
+def _takes_forward(model) -> bool:
+    options = model.model_options.get('transformer_options', {})
+    return options.get(comfy_patch.TAKE_FORWARD) is not None
+
+
 class VedaSparseAttention(io.ComfyNode):
     """Veda learned block-sparse attention for MiniMax-H3."""
 
@@ -200,7 +205,7 @@ class VedaSparseAttention(io.ComfyNode):
                              f'0-{num_layers - 1}; '
                              f'{veda_settings.format_index_list(missing)} '
                              'do not exist.')
-        patched, _ = comfy_patch.apply(model, bundle, settings, node_id)
+        patched, patch = comfy_patch.apply(model, bundle, settings, node_id)
         device = comfy.model_management.get_torch_device()
         info = hardware.describe(device)
         probe = backends.probe(device)
@@ -214,14 +219,27 @@ class VedaSparseAttention(io.ComfyNode):
         if info.kind == 'cuda' and any(error for _, _, error in probe):
             lines.append('Tip: pip install triton (triton-windows on '
                          'Windows) for the sparse kernel')
+        if patch.taken_over:
+            lines.append(
+                'Took over the attention from ' + ', '.join(patch.taken_over)
+                + ': Veda runs the sparse layers, it keeps the '
+                'full-attention ones.')
         if verbose:
             lines.append(f'Predictor: {bundle.describe()}')
             lines += [f'  {name}: {error or "available"}'
                       for name, _, error in probe]
+            if patch.taken_over:
+                lines.append(
+                    '  sparse layers use: '
+                    + ('the Low VRAM attention forward (KJNodes)'
+                       if _takes_forward(patched)
+                       else 'ComfyUI\'s MiniMax-H3 attention forward'))
         if _other_sparse_node(model):
             status.warn('ComfyUI\'s "Model Sparse Attention" node is also '
                         'applied; on H3 it replaces the attention blocks, so '
                         'Veda would not run. Remove one of the two.')
+        elif patch.taken_over:
+            status.warn('\n'.join(lines))
         else:
             status.show('\n'.join(lines))
         return io.NodeOutput(patched)

@@ -49,6 +49,11 @@ seed 跑全注意力做对比。
 不要在 H3 上和 ComfyUI 自带的 "Model Sparse Attention" 同时使用：那个节点直接替换注意力
 block，Veda 根本不会被调用。节点检测到两者同时存在时会提示。
 
+其他注意力节点可以保留：Veda 叠在 "Patch Sage Attention KJ" 之上（Veda 不接的调用走 sage），
+KJNodes 的 "MiniMax H3 Low VRAM Attention" 照常生效。整个替换 H3 注意力的节点（例如
+"MiniMax H3 Mem Eff Sage Attention Patch"）要放在 Veda **之前**：Veda 接管稀疏层，全注意力层
+仍交给那个节点，并在节点上说明；放在 Veda 之后会让 Veda 收不到任何调用，节点同样会提示。
+
 ### 打分器
 
 节点自己不下载任何东西。打分器（275 MB）进入 `models/veda` 有两种方式：

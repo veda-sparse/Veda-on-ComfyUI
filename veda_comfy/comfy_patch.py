@@ -18,9 +18,18 @@ ComfyUI's own sparse attention node, so a node applied later cannot
 silently replace it. KJNodes' "MiniMax H3 Low VRAM Attention" splits each
 call into head groups (`minimax_head_chunks`), which would hand Veda a
 slice of heads it cannot map onto the predictor; Veda takes that split
-over instead (see `install`). Node text: a few readable lines (kernel, video and
-plan, sparsity, share of full attention computed); `verbose` adds timing
-and call diagnostics.
+over instead (see `install`).
+
+Some nodes replace H3's whole attention forward with one that never calls
+`optimized_attention` (KJNodes' "MiniMax H3 Mem Eff Sage Attention
+Patch"), so the override would never run. When such a node comes before
+Veda, Veda routes that forward per block (`_routed_forward`): blocks Veda
+runs sparse take a forward that calls the override, the others keep the
+replacing node's forward. When it comes after Veda nothing can be routed;
+the node says so, and a run in which no H3 call reached Veda says so too.
+
+Node text: a few readable lines (kernel, video and plan, sparsity, share
+of full attention computed); `verbose` adds timing and call diagnostics.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import logging
+import re
 import weakref
 
 import torch
@@ -52,6 +62,17 @@ _KEY = 'veda_sparse_attention'
 # and splits only the calls it runs as full attention.
 _HEAD_CHUNKS = 'minimax_head_chunks'
 _HELD_HEAD_CHUNKS = 'veda_held_head_chunks'
+# KJNodes' convention: a forward that still calls `optimized_attention` is
+# marked with this attribute, and a node that installs one for sparse
+# attention to use leaves it under `sol_take_forward` (its Low VRAM node).
+_COMPOSES = '_uses_optimized_attention'
+TAKE_FORWARD = 'sol_take_forward'
+_ATTN_FORWARD = re.compile(r'diffusion_model\.blocks\.(\d+)\.attn\.forward')
+# Display names of known forward replacements, by function name.
+_KNOWN_FORWARDS = {
+    'minimax_sageattn_forward':
+        '"MiniMax H3 Mem Eff Sage Attention Patch" (KJNodes)',
+}
 _TIMED_PHASES = (('gather', 'gather'), ('score', 'score'),
                  ('select', 'select'), ('attend', 'kernel'),
                  ('scatter', 'scatter'))
@@ -88,6 +109,28 @@ def _by_head_groups(attend, q, chunks: int, skip_output_reshape: bool):
     return out
 
 
+def replaced_forwards(model_patcher) -> dict[int, object]:
+    """H3 attention forwards patched in by other nodes that never call
+    `optimized_attention`, by block index."""
+    found = {}
+    patches = getattr(model_patcher, 'object_patches', None) or {}
+    for key, value in patches.items():
+        match = _ATTN_FORWARD.fullmatch(key)
+        if match and not getattr(value, _COMPOSES, False):
+            found[int(match.group(1))] = value
+    return found
+
+
+def describe_forward(forward) -> str:
+    """Who installed an attention forward, for the node text."""
+    name = getattr(forward, '__name__', type(forward).__name__)
+    known = _KNOWN_FORWARDS.get(name)
+    if known:
+        return known
+    module = getattr(forward, '__module__', None)
+    return f'{name} ({module})' if module else name
+
+
 def _is_interrupt(error: BaseException) -> bool:
     # comfy.model_management.InterruptProcessingException, without importing
     # it at module scope.
@@ -102,6 +145,7 @@ class _Run:
         self.evaluations = 0          # model calls (layer 0 reached)
         self.video = None             # e.g. '1344x768 · 5.2 s'
         self.failed = None            # error text if the sparse path failed
+        self.prepared = False         # sampling started (ON_PREPARE_STATE)
         self.announced: set = set()
 
 
@@ -118,6 +162,8 @@ class VedaPatch:
         self._timers: dict[str, veda_engine.PhaseTimer] = {}
         self._steps = weakref.WeakKeyDictionary()
         self.run = _Run()
+        # Display names of the forwards routed by `take_over_forwards`.
+        self.taken_over: list[str] = []
 
     @property
     def calls(self) -> collections.Counter:
@@ -224,14 +270,31 @@ class VedaPatch:
 
         return override
 
-    def _dense_reason(self, q, options) -> str | None:
-        """Why this H3 call runs full attention, or None to go sparse."""
-        s, bundle = self.settings, self.bundle
+    def _block_reason(self, options, device=None) -> str | None:
+        """Why this block runs full attention, from what is known before
+        q / k / v exist; None if it may go sparse."""
+        s = self.settings
         if self.run.failed:
             return 'error'
         layer = options.get('block_index')
-        if not isinstance(layer, int) or layer >= bundle.num_layers:
+        if not isinstance(layer, int) or layer >= self.bundle.num_layers:
             return 'layer outside the predictor'
+        if layer in s.dense_layers:
+            return 'full-attention layer'
+        if s.dense_steps and self._step(options) in s.dense_steps:
+            return 'full-attention step'
+        if s.generated.keeps_all and s.reference.keeps_all:
+            return 'sparsity 0%'
+        if device is not None and self._engines.get(str(device), 0) is None:
+            return 'no sparse kernel'
+        return None
+
+    def _dense_reason(self, q, options) -> str | None:
+        """Why this H3 call runs full attention, or None to go sparse."""
+        bundle = self.bundle
+        reason = self._block_reason(options)
+        if reason is not None:
+            return reason
         if q.shape[1] != bundle.num_heads or q.shape[3] != bundle.head_dim:
             self._announce(('shape', tuple(q.shape)),
                            f'Veda off: the model has {q.shape[1]} heads of '
@@ -239,12 +302,6 @@ class VedaPatch:
                            f'{bundle.num_heads} x {bundle.head_dim}',
                            warn=True)
             return 'head mismatch'
-        if layer in s.dense_layers:
-            return 'full-attention layer'
-        if s.dense_steps and self._step(options) in s.dense_steps:
-            return 'full-attention step'
-        if s.generated.keeps_all and s.reference.keeps_all:
-            return 'sparsity 0%'
         return None
 
     def _sparse(self, q, k, v, layout, options, skip_output_reshape, dense):
@@ -371,7 +428,73 @@ class VedaPatch:
         self.run.announced.add(key)
         (self.status.warn if warn else self.status.show)(text)
 
+    # -- other nodes' attention forwards ----------------------------------
+
+    def _routed_forward(self, attn, replaced):
+        """Block `attn`'s forward when another node replaced it with one that
+        bypasses the override: blocks Veda may run sparse take a forward
+        that calls the override, the rest keep `replaced`."""
+        patch = self
+        stock = type(attn).forward
+
+        def forward(x, rope_freqs=None, transformer_options={}):
+            options = (transformer_options
+                       if isinstance(transformer_options, dict) else {})
+            first = x[0] if isinstance(x, list) else x
+            reason = patch._block_reason(options, first.device)
+            if reason is None:
+                own = options.get(TAKE_FORWARD)
+                if own is not None:  # KJNodes' Low VRAM forward
+                    return own(attn, x, rope_freqs=rope_freqs,
+                               transformer_options=transformer_options)
+                if isinstance(x, list):  # KJNodes' block patch hands [h]
+                    x = x.pop()
+                return stock(attn, x, rope_freqs=rope_freqs,
+                             transformer_options=transformer_options)
+            patch.run.calls[reason] += 1
+            if options.get('block_index') == 0:
+                patch.run.evaluations += 1
+            held = options.get(_HELD_HEAD_CHUNKS)
+            if held:  # the replacing forward reads the split itself
+                transformer_options = dict(transformer_options)
+                transformer_options[_HEAD_CHUNKS] = held
+            return replaced(x, rope_freqs=rope_freqs,
+                            transformer_options=transformer_options)
+
+        setattr(forward, _COMPOSES, True)
+        return forward
+
+    def take_over_forwards(self, model_patcher, diffusion) -> None:
+        """Routes the H3 attention forwards that bypass the override (see
+        `_routed_forward`) on `model_patcher`, a clone Veda owns."""
+        names = []
+        for index, replaced in sorted(replaced_forwards(model_patcher).items()):
+            if index >= len(diffusion.blocks):
+                continue
+            attn = diffusion.blocks[index].attn
+            model_patcher.add_object_patch(
+                f'diffusion_model.blocks.{index}.attn.forward',
+                self._routed_forward(attn, replaced))
+            name = describe_forward(replaced)
+            if name not in names:
+                names.append(name)
+        self.taken_over = names
+
     # -- lifecycle ---------------------------------------------------------
+
+    def on_prepare(self, model_patcher, model_options) -> None:
+        """Every sampling step: re-install, and catch nodes after Veda that
+        replace the H3 attention forward (Veda cannot route those)."""
+        self.run.prepared = True
+        self.install(model_options['transformer_options'])
+        later = replaced_forwards(model_patcher)
+        if later:
+            names = sorted({describe_forward(f) for f in later.values()})
+            self._announce(
+                ('replaced', tuple(names)),
+                'Veda is not running: ' + ', '.join(names) + ' replaces '
+                'the MiniMax-H3 attention after Veda. Move the Veda node '
+                'after it (last before the sampler).', warn=True)
 
     def install(self, transformer_options: dict) -> None:
         """Puts the override on top of whatever override is on the hook;
@@ -397,6 +520,13 @@ class VedaPatch:
         summary = self._summary()
         if summary:
             self.status.show(summary)
+        elif self.run.prepared and not any(
+                isinstance(key, tuple) and key[0] == 'replaced'
+                for key in self.run.announced):
+            self.status.warn(
+                'Veda did not run: no MiniMax-H3 attention call reached it '
+                'in this render. Another node probably replaces the H3 '
+                'attention; place Veda after it, last before the sampler.')
         for engine in self._engines.values():
             if engine is not None:
                 engine.stats = veda_engine.Stats()
@@ -409,10 +539,12 @@ def apply(model, bundle, settings: veda_settings.VedaSettings,
     patch = VedaPatch(bundle, settings, node_id)
     patched = model.clone()
     patch.install(patched.model_options.setdefault('transformer_options', {}))
+    patch.take_over_forwards(patched,
+                             patched.get_model_object('diffusion_model'))
     patched.add_callback_with_key(
         comfy.patcher_extension.CallbacksMP.ON_PREPARE_STATE, _KEY,
-        lambda model_patcher, timestep, model_options: patch.install(
-            model_options['transformer_options']))
+        lambda model_patcher, timestep, model_options: patch.on_prepare(
+            model_patcher, model_options))
     patched.add_callback_with_key(
         comfy.patcher_extension.CallbacksMP.ON_CLEANUP, _KEY,
         lambda model_patcher: patch.on_cleanup())

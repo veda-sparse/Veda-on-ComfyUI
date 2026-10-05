@@ -290,3 +290,64 @@ def test_declined_calls_keep_the_kjnodes_head_split(h3, bundle, low_vram):
     assert seen == [1] * HEADS * LAYERS
     for a, b in zip(dense, out):
         torch.testing.assert_close(a, b, rtol=1e-4, atol=1e-4)
+
+
+def _bypassing_forward(seen):
+    """An H3 attention forward that never calls the attention override,
+    like KJNodes' "MiniMax H3 Mem Eff Sage Attention Patch"."""
+    def make(attn):
+        stock = type(attn).forward
+
+        def forward(x, rope_freqs=None, transformer_options={}):
+            seen.append((transformer_options.get('block_index'),
+                         transformer_options.get('minimax_head_chunks')))
+            options = dict(transformer_options)
+            options.pop('optimized_attention_override', None)
+            return stock(attn, x, rope_freqs=rope_freqs,
+                         transformer_options=options)
+        return forward
+    return make
+
+
+def test_forward_replacement_hides_every_call_from_veda(h3, bundle,
+                                                        monkeypatch):
+    """What users saw with Mem Eff Sage: Veda printed "ready", then
+    nothing; now the run ends with a warning."""
+    _, model = h3
+    make = _bypassing_forward([])
+    for block in model.blocks:
+        monkeypatch.setattr(block.attn, 'forward', make(block.attn))
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+    warned = []
+    patch.status.warn = warned.append
+    patch.run.prepared = True  # ON_PREPARE_STATE ran
+    _forward(h3, 't2va', patch)
+    assert patch.calls.get('sparse', 0) == 0
+    patch.on_cleanup()
+    assert warned and warned[-1].startswith('Veda did not run')
+
+
+@pytest.mark.parametrize('take_forward', [None, _low_vram_forward])
+def test_routed_forward_runs_sparse_and_keeps_the_replacement(
+        h3, bundle, monkeypatch, take_forward):
+    """Sparse blocks go through ComfyUI's forward, or KJNodes' Low VRAM
+    forward when that node left it under `sol_take_forward`."""
+    _, model = h3
+    seen = []
+    make = _bypassing_forward(seen)
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1},
+                   dense_layers=frozenset({1}))
+    for block in model.blocks:
+        monkeypatch.setattr(block.attn, 'forward', patch._routed_forward(
+            block.attn, make(block.attn)))
+    h3_model, _ = h3
+    x, context, payload = _inputs(h3_model, 't2va')
+    options = {'minimax_head_chunks': 2, 'sol_take_forward': take_forward}
+    patch.install(options)
+    with torch.no_grad():
+        out = model(x, torch.tensor([500.0]), context,
+                    transformer_options=options, minimax_payload=payload)
+    assert all(torch.isfinite(t).all() for t in out)
+    assert patch.calls == {'sparse': LAYERS - 1, 'full-attention layer': 1}
+    # The replacing forward gets block 1 and its head split back.
+    assert seen == [(1, 2)]

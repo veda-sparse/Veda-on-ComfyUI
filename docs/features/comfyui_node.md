@@ -54,6 +54,11 @@
   ComfyUI 的中断异常照常抛出。
 - **可见的回退**：没有可用 kernel、布局读不懂、未训练的尺寸、头数不匹配……每一种都在节点上显示
   一次（`status.NodeStatus` → `send_progress_text`），不需要前端扩展。
+- **警告和错误中英双语，界面文字跟随语言**：`send_progress_text` 和 `ValueError` 都是后端发出的
+  字符串，而后端不知道每个浏览器的界面语言（多个浏览器可以同时连同一个 ComfyUI），所以无法
+  "自适应"。因此运行时的警告与错误一律英文在前、中文在后，每条先说 Veda 是否在跑，再说怎么办；
+  日志只写英文。节点名、描述、tooltip 是前端渲染的静态文字，ComfyUI 会读自定义节点的
+  `locales/<lang>/nodeDefs.json`，这部分真正跟随界面语言（`locales/zh`）。普通状态文字只用英文。
 - **整个稀疏路径在 `pause_malloc_graph()` 里跑**：ComfyUI 0.38 起，H3 前向的每个 block 都在
   comfy-aimdo 的显存分配录制（malloc graph）里执行，block 内的分配必须在 block 结束前释放。
   Veda 跨调用保存设备状态（tile 布局、head 组、统计量），kernel 也有自己的 workspace，在录制区
@@ -95,7 +100,8 @@
   照 KJNodes Low VRAM 节点按头分组的 forward 下仍然每层稀疏、结果与不分组相同，拒绝的调用
   仍按头分组；绕开 override 的 forward 会让运行结束时警告，路由后的 forward 让稀疏层走 Veda、
   全注意力层回到被替换的 forward（含 `sol_take_forward` 的情形）。
-- `tests/unit/test_nodes.py` 另测：节点执行时接管在它之前的 forward 替换，并在节点上说明；
+- `tests/unit/test_nodes.py` 另测：错误信息英文一行、中文一行；`locales/zh/nodeDefs.json` 的输入
+  与 schema 一致；节点执行时接管在它之前的 forward 替换，并在节点上说明；
   在它之后的替换由 `ON_PREPARE_STATE` 报出来。
 - `tests/unit/test_nodes.py`：schema（只有 model / predictor 可见）、各种错误信息、patch 安装。
 - `tests/unit/test_predictors.py`：发布元数据被钉死（完整 commit、sha256）、URL 指向该

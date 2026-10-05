@@ -160,8 +160,10 @@ def _bypassing(attn):
 def _capture(monkeypatch):
     from veda_comfy import status
     shown = []
-    monkeypatch.setattr(status.NodeStatus, 'show',
-                        lambda self, text, level=0: shown.append(text))
+    monkeypatch.setattr(
+        status.NodeStatus, 'show',
+        lambda self, text, level=0, zh=None: shown.append(
+            status.bilingual(text, zh) if zh else text))
     return shown
 
 
@@ -180,6 +182,7 @@ def test_execute_takes_over_a_forward_replacement_before_it(node,
         assert out.object_patches[key]._uses_optimized_attention
     assert 'Took over the attention from "MiniMax H3 Mem Eff Sage ' \
         'Attention Patch" (KJNodes)' in shown[-1]
+    assert '已接管' in shown[-1]
 
 
 def test_a_forward_replacement_after_veda_is_reported(node, monkeypatch):
@@ -196,3 +199,30 @@ def test_a_forward_replacement_after_veda_is_reported(node, monkeypatch):
     for callback in prepare:
         callback(later, None, later.model_options)
     assert shown[-1].startswith('Veda is not running: "MiniMax H3 Mem Eff')
+    assert '\nVeda 未运行' in shown[-1]
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'full_attention_layers': '0, 9'},
+    {'full_attention_steps': 'last'},
+    {'generated_sparsity': '100%'},
+])
+def test_errors_are_english_then_chinese(node, kwargs):
+    with pytest.raises(ValueError) as error:
+        node.VedaSparseAttention.execute(_patcher(), 'tiny.safetensors',
+                                         **kwargs)
+    english, chinese = str(error.value).split('\n')[-2:]
+    assert english.isascii() and not chinese.isascii()
+
+
+def test_chinese_node_definitions_match_the_schema(node):
+    import json
+    import os
+    from conftest import ROOT
+    path = os.path.join(ROOT, 'locales', 'zh', 'nodeDefs.json')
+    with open(path, encoding='utf-8') as f:
+        defs = json.load(f)['VedaSparseAttention']
+    schema = node.VedaSparseAttention.define_schema()
+    assert sorted(defs['inputs']) == sorted(i.id for i in schema.inputs)
+    assert all(v['name'] == k for k, v in defs['inputs'].items())
+    assert list(defs['outputs']) == ['0']

@@ -82,8 +82,13 @@ MiniMax-H3（T2VA / FL2VA / R2VA）**，同时保证普通用户的工作流、L
   显示在节点上（并写日志），不能静默。反过来，任何稀疏路径的异常都不能让用户的渲染失败：
   `comfy_patch` 会捕获、提示并退回全注意力（ComfyUI 的中断异常除外）。
 - 日志只写 ASCII（Windows 控制台和日志文件不一定是 UTF-8）。节点上的状态文字**不用 emoji**，
-  唯一的非 ASCII 字符是分隔符 `·`（`status.py` 写日志时换成 `|`）；是否可用、是否回退靠措辞
-  说清楚，不靠图标。
+  除中文外唯一的非 ASCII 字符是分隔符 `·`（`status.py` 写日志时换成 `|`）；是否可用、是否回退
+  靠措辞说清楚，不靠图标。
+- **警告和错误中英双语，英文在前、中文在后**：后端不知道每个浏览器用哪种语言，所以运行时的
+  警告（`NodeStatus.warn(en, zh=...)`，中文只发到节点，日志仍是英文）和 `ValueError`
+  （`status.bilingual(en, zh)`）两种都写。每条先说结论（Veda 是否在跑），再说怎么办。
+  静态文字（节点名、描述、tooltip）放 `locales/zh/nodeDefs.json`，跟随界面语言；普通状态
+  文字只用英文。改 schema 的文字时同步改 `locales`。
 - 注释解释"为什么"；魔法数字写成具名常量并注明来源。
 
 ### 1.5 测试与合入
@@ -149,6 +154,7 @@ veda_comfy/
   kernels/           sage/：Triton INT8 块稀疏 kernel（算术取自 SageAttention v1）
 example_workflows/   示例工作流（由 tools/make_example_workflows.py 生成）
 assets/              图标
+locales/             界面翻译（ComfyUI 读 locales/<lang>/nodeDefs.json）
 tools/               维护工具：probe_gpu_kernels.py、compare_int8.py、
                      make_example_workflows.py、bench_attention.py、
                      e2e_minimax_h3.py

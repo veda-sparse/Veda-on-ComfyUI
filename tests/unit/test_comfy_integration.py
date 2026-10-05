@@ -195,8 +195,8 @@ def test_declined_calls_reach_the_previous_override(h3, bundle):
 def test_node_text_reports_sparsity_not_call_counts(h3, bundle, verbose):
     patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1}, verbose=verbose)
     shown = []
-    patch.status.show = lambda text, *a: shown.append(text)
-    patch.status.warn = lambda text: shown.append(text)
+    patch.status.show = lambda text, *a, **k: shown.append(text)
+    patch.status.warn = lambda text, *a, **k: shown.append(text)
     _forward(h3, 't2va', patch)
     patch.on_cleanup()
     running, summary = shown[0], shown[-1]
@@ -313,18 +313,21 @@ def test_forward_replacement_hides_every_call_from_veda(h3, bundle,
                                                         monkeypatch):
     """What users saw with Mem Eff Sage: Veda printed "ready", then
     nothing; now the run ends with a warning."""
+    from veda_comfy import status
     _, model = h3
     make = _bypassing_forward([])
     for block in model.blocks:
         monkeypatch.setattr(block.attn, 'forward', make(block.attn))
     patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
     warned = []
-    patch.status.warn = warned.append
+    patch.status.warn = lambda text, zh=None: warned.append(
+        status.bilingual(text, zh))
     patch.run.prepared = True  # ON_PREPARE_STATE ran
     _forward(h3, 't2va', patch)
     assert patch.calls.get('sparse', 0) == 0
     patch.on_cleanup()
     assert warned and warned[-1].startswith('Veda did not run')
+    assert '\nVeda 未运行' in warned[-1]  # warnings carry Chinese too
 
 
 @pytest.mark.parametrize('take_forward', [None, _low_vram_forward])

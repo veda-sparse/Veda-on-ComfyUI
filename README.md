@@ -100,6 +100,9 @@ trained size: ...` on the tile plan line means the video is outside the
 trained set. `verbose` adds per-phase timing, call counts and predictor
 details.
 
+Warnings and errors come in English and Chinese, one after the other;
+the node's name and tooltips follow ComfyUI's interface language.
+
 ### Options
 
 Only `model` and `predictor` are visible. The rest are advanced inputs

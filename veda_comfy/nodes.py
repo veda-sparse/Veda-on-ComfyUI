@@ -70,8 +70,10 @@ def _predictor_path(name: str) -> str:
     folder = folder_paths.get_folder_paths(FOLDER)[0]
     known = predictors.KNOWN_PREDICTORS.get(name)
     if known is None:
-        raise ValueError(f'Predictor {name!r} is not in {folder}. '
-                         'Pick another file or put it there.')
+        raise ValueError(veda_status.bilingual(
+            f'Predictor {name!r} is not in {folder}. Pick another file or '
+            'put it there.',
+            f'打分器 {name!r} 不在 {folder} 里。请换一个文件，或把它放进去。'))
     raise ValueError(predictors.how_to_get(known, folder))
 
 
@@ -91,16 +93,23 @@ def _bundle(path: str) -> veda_bundle.PredictorBundle:
 def _check_model(model, bundle) -> tuple[int, int, int]:
     diffusion = model.get_model_object('diffusion_model')
     if type(diffusion).__name__ != 'MiniMaxH3Model':
-        raise ValueError(
+        raise ValueError(veda_status.bilingual(
             'Veda accelerates MiniMax-H3 only. Connect the MODEL of a '
-            f'MiniMax-H3 checkpoint (got {type(diffusion).__name__}).')
+            f'MiniMax-H3 checkpoint (got {type(diffusion).__name__}).',
+            'Veda 只加速 MiniMax-H3。请连接 MiniMax-H3 模型的 MODEL'
+            f'（现在是 {type(diffusion).__name__}）。'))
     attn = diffusion.blocks[0].attn
     shape = (len(diffusion.blocks), attn.heads, attn.head_dim)
-    if shape != (bundle.num_layers, bundle.num_heads, bundle.head_dim):
-        raise ValueError(
-            f'This model has {shape[0]} blocks x {shape[1]} heads x '
-            f'{shape[2]}, but the predictor was trained for '
-            f'{bundle.num_layers} x {bundle.num_heads} x {bundle.head_dim}.')
+    trained = (bundle.num_layers, bundle.num_heads, bundle.head_dim)
+    if shape != trained:
+        model_shape = ' x '.join(map(str, shape))
+        trained_shape = ' x '.join(map(str, trained))
+        raise ValueError(veda_status.bilingual(
+            f'This model has {model_shape} (blocks x heads x head dim), but '
+            f'the predictor was trained for {trained_shape}. Pick the '
+            'predictor made for this model.',
+            f'这个模型是 {model_shape}（block x 头数 x 头维度），打分器训练于 '
+            f'{trained_shape}。请选择为这个模型训练的打分器。'))
     return shape
 
 
@@ -140,9 +149,10 @@ class VedaSparseAttention(io.ComfyNode):
                 io.Combo.Input(
                     'predictor', options=_predictor_options(),
                     default=default,
-                    tooltip=f'Veda predictor in models/{FOLDER}. The '
-                            'official release is downloaded automatically '
-                            'on first use (set HF_ENDPOINT for a mirror).'),
+                    tooltip=f'Veda predictor in models/{FOLDER}. Open a '
+                            'Veda template and ComfyUI\'s missing-model '
+                            'dialog fetches it, or put the file there by '
+                            'hand.'),
                 io.String.Input(
                     'generated_sparsity', default='90%', advanced=True,
                     tooltip='Sparsity of the generated video\'s attention. '
@@ -187,7 +197,10 @@ class VedaSparseAttention(io.ComfyNode):
         try:
             bundle = _bundle(_predictor_path(predictor))
         except veda_bundle.BundleError as error:
-            raise ValueError(str(error)) from error
+            raise ValueError(veda_status.bilingual(
+                str(error),
+                f'{predictor} 不是可用的 Veda 打分器（原因见上）。'
+                f'models/{FOLDER} 里只放 Veda 打分器文件。')) from error
         num_layers, _, _ = _check_model(model, bundle)
         settings = veda_settings.VedaSettings(
             generated=veda_settings.parse_sparsity(generated_sparsity,
@@ -201,10 +214,12 @@ class VedaSparseAttention(io.ComfyNode):
             verbose=verbose)
         missing = sorted(i for i in settings.dense_layers if i >= num_layers)
         if missing:
-            raise ValueError(f'full_attention_layers: this model has blocks '
-                             f'0-{num_layers - 1}; '
-                             f'{veda_settings.format_index_list(missing)} '
-                             'do not exist.')
+            missing = veda_settings.format_index_list(missing)
+            raise ValueError(veda_status.bilingual(
+                f'full_attention_layers: this model has blocks '
+                f'0-{num_layers - 1}; {missing} do not exist.',
+                f'full_attention_layers：这个模型的 block 是 '
+                f'0-{num_layers - 1}，{missing} 不存在。'))
         patched, patch = comfy_patch.apply(model, bundle, settings, node_id)
         device = comfy.model_management.get_torch_device()
         info = hardware.describe(device)
@@ -216,14 +231,20 @@ class VedaSparseAttention(io.ComfyNode):
         full = settings.describe_full_attention()
         if full:
             lines.append(f'Full attention: {full}')
+        notes = []
         if info.kind == 'cuda' and any(error for _, _, error in probe):
-            lines.append('Tip: pip install triton (triton-windows on '
-                         'Windows) for the sparse kernel')
+            notes.append(('Tip: pip install triton (triton-windows on '
+                          'Windows) for the sparse kernel',
+                          '提示：pip install triton（Windows 上是 '
+                          'triton-windows）即可启用稀疏 kernel'))
         if patch.taken_over:
-            lines.append(
-                'Took over the attention from ' + ', '.join(patch.taken_over)
-                + ': Veda runs the sparse layers, it keeps the '
-                'full-attention ones.')
+            names = ', '.join(patch.taken_over)
+            notes.append((f'Took over the attention from {names}: Veda runs '
+                          'the sparse layers, it keeps the full-attention '
+                          'ones.',
+                          f'已接管 {names} 的注意力：稀疏层由 Veda 计算，'
+                          '全注意力层仍由它计算。'))
+        lines += [veda_status.bilingual(en, zh) for en, zh in notes]
         if verbose:
             lines.append(f'Predictor: {bundle.describe()}')
             lines += [f'  {name}: {error or "available"}'
@@ -237,7 +258,10 @@ class VedaSparseAttention(io.ComfyNode):
         if _other_sparse_node(model):
             status.warn('ComfyUI\'s "Model Sparse Attention" node is also '
                         'applied; on H3 it replaces the attention blocks, so '
-                        'Veda would not run. Remove one of the two.')
+                        'Veda would not run. Remove one of the two.',
+                        zh='同时接了 ComfyUI 的 "Model Sparse Attention" 节点：'
+                           '它在 H3 上直接替换注意力 block，Veda 不会运行。'
+                           '请二选一。')
         elif patch.taken_over:
             status.warn('\n'.join(lines))
         else:

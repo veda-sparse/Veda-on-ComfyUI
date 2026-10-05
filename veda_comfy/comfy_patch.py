@@ -181,7 +181,9 @@ class VedaPatch:
                 self.status.warn(
                     f'Veda off: no sparse kernel works on '
                     f'{resolution.device.label}; using full attention\n'
-                    f'{resolution.report()}')
+                    f'{resolution.report()}',
+                    zh=f'Veda 未启用：{resolution.device.label} 上没有可用的'
+                       '稀疏 kernel，本次使用全注意力（原因见上）。')
                 self._engines[key] = None
             else:
                 engine = veda_engine.VedaEngine(
@@ -265,7 +267,9 @@ class VedaPatch:
                 logging.error('Veda: sparse attention failed', exc_info=True)
                 patch.status.warn(
                     'Veda hit an error and finishes this run with full '
-                    f'attention:\n{patch.run.failed}')
+                    f'attention:\n{patch.run.failed}',
+                    zh='Veda 出错，本次剩余部分改用全注意力，渲染照常完成'
+                       '（错误见上）。')
                 return dense('error')
 
         return override
@@ -297,10 +301,16 @@ class VedaPatch:
             return reason
         if q.shape[1] != bundle.num_heads or q.shape[3] != bundle.head_dim:
             self._announce(('shape', tuple(q.shape)),
-                           f'Veda off: the model has {q.shape[1]} heads of '
-                           f'dim {q.shape[3]}, the predictor expects '
-                           f'{bundle.num_heads} x {bundle.head_dim}',
-                           warn=True)
+                           f'Veda off: an attention call has {q.shape[1]} '
+                           f'heads of dim {q.shape[3]}, the predictor '
+                           f'expects {bundle.num_heads} x {bundle.head_dim}. '
+                           'Another node may split the heads; using full '
+                           'attention.',
+                           warn=True,
+                           zh=f'Veda 未启用：注意力调用有 {q.shape[1]} 个头'
+                              f'（维度 {q.shape[3]}），打分器需要 '
+                              f'{bundle.num_heads} x {bundle.head_dim}。可能有'
+                              '其他节点把头拆开了；本次使用全注意力。')
             return 'head mismatch'
         return None
 
@@ -320,7 +330,10 @@ class VedaPatch:
         except h3_layout.LayoutError as error:
             self._announce(('layout', str(error)),
                            f'Veda off for this video: cannot read the H3 '
-                           f'layout ({error})', warn=True)
+                           f'layout ({error}); using full attention.',
+                           warn=True,
+                           zh='Veda 本次未启用：读不懂这个视频的 H3 序列布局'
+                              '（原因见上），本次使用全注意力。')
             return dense('layout')
         choice = engine.plan_for(spec)
         self.run.video = veda_plans.describe_grid(spec.target.grid)
@@ -422,11 +435,15 @@ class VedaPatch:
         lines.append(f'Predictor: {self.bundle.describe()}')
         return lines
 
-    def _announce(self, key, text: str, warn: bool = False) -> None:
+    def _announce(self, key, text: str, warn: bool = False,
+                  zh: str | None = None) -> None:
         if key in self.run.announced:
             return
         self.run.announced.add(key)
-        (self.status.warn if warn else self.status.show)(text)
+        if warn:
+            self.status.warn(text, zh=zh)
+        else:
+            self.status.show(text, zh=zh)
 
     # -- other nodes' attention forwards ----------------------------------
 
@@ -489,12 +506,15 @@ class VedaPatch:
         self.install(model_options['transformer_options'])
         later = replaced_forwards(model_patcher)
         if later:
-            names = sorted({describe_forward(f) for f in later.values()})
+            names = ', '.join(sorted({describe_forward(f)
+                                      for f in later.values()}))
             self._announce(
-                ('replaced', tuple(names)),
-                'Veda is not running: ' + ', '.join(names) + ' replaces '
-                'the MiniMax-H3 attention after Veda. Move the Veda node '
-                'after it (last before the sampler).', warn=True)
+                ('replaced', names),
+                f'Veda is not running: {names} replaces the MiniMax-H3 '
+                'attention after Veda. Move the Veda node after it (last '
+                'before the sampler).', warn=True,
+                zh=f'Veda 未运行：{names} 在 Veda 之后替换了 MiniMax-H3 的'
+                   '注意力。请把 Veda 节点移到它后面（采样器之前的最后一个）。')
 
     def install(self, transformer_options: dict) -> None:
         """Puts the override on top of whatever override is on the hook;
@@ -526,7 +546,10 @@ class VedaPatch:
             self.status.warn(
                 'Veda did not run: no MiniMax-H3 attention call reached it '
                 'in this render. Another node probably replaces the H3 '
-                'attention; place Veda after it, last before the sampler.')
+                'attention; place Veda after it, last before the sampler.',
+                zh='Veda 未运行：这次渲染没有任何 MiniMax-H3 注意力调用到达 '
+                   'Veda。可能有其他节点替换了 H3 注意力；请把 Veda 放在它'
+                   '之后、采样器之前。')
         for engine in self._engines.values():
             if engine is not None:
                 engine.stats = veda_engine.Stats()

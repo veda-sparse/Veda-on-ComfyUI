@@ -83,4 +83,8 @@ def how_to_get(known: KnownPredictor, folder: str) -> str:
             'Veda-on-ComfyUI) and let ComfyUI download it from the missing '
             'models dialog, or download it by hand and restart ComfyUI:\n'
             f'  {known.url}\n'
-            f'and put it in {folder}')
+            f'and put it in {folder}\n'
+            f'打分器 {known.filename}（{known.megabytes} MB）不在 {folder} 里。'
+            '打开 Veda 模板（工作流 -> 浏览模板 -> Veda-on-ComfyUI），'
+            '在缺失模型对话框里一键下载；或者从上面的地址手动下载，'
+            '放进该目录后重启 ComfyUI。')

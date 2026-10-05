@@ -79,6 +79,8 @@ Attention computed: 10.9% of full attention (89.1% skipped)
 `nearest trained size: ...` 表示这次的尺寸不在训练集里。打开 `verbose` 会额外显示各阶段耗时、
 调用次数和打分器信息。
 
+警告和错误会先写英文、再写中文；节点名和 tooltip 跟随 ComfyUI 的界面语言显示中文。
+
 ### 选项
 
 默认只显示 `model` 和 `predictor`，其余都是高级输入（点"显示高级输入"），默认值即训练值。

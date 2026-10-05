@@ -10,6 +10,7 @@ import dataclasses
 import re
 from collections.abc import Sequence
 
+from . import status as veda_status
 from .core import selection
 
 # Separators users type: ASCII and full-width commas / semicolons, spaces.
@@ -37,8 +38,11 @@ def parse_index_list(text: str, what: str) -> frozenset[int]:
             continue
         match = _RANGE.match(token)
         if match is None:
-            raise ValueError(f'{what}: cannot read {token!r}. Use 0-based '
-                             'indices and ranges, e.g. "0, 1, 47-49".')
+            raise ValueError(veda_status.bilingual(
+                f'{what}: cannot read {token!r}. Use 0-based indices and '
+                'ranges, e.g. "0, 1, 47-49".',
+                f'{what}：看不懂 {token!r}。请写从 0 开始的下标和范围，'
+                '例如 "0, 1, 47-49"。'))
         lo, hi = sorted((int(match.group(1)), int(match.group(2))))
         indices.update(range(lo, hi + 1))
     return frozenset(indices)
@@ -55,16 +59,21 @@ def parse_sparsity(text: str, what: str) -> selection.Budget:
     if match is not None:
         percent = float(match.group(1))
         if percent >= 100.0:
-            raise ValueError(f'{what}: {value} would skip every tile; use a '
-                             'percentage below 100%, e.g. "90%".')
+            raise ValueError(veda_status.bilingual(
+                f'{what}: {value} would skip every tile; use a percentage '
+                'below 100%, e.g. "90%".',
+                f'{what}：{value} 会跳过所有 tile；请写小于 100% 的比例，'
+                '例如 "90%"。'))
         return selection.Budget.sparsity(percent)
     match = _TILES.match(value)
     if match is not None and int(match.group(1)) > 0:
         return selection.Budget(tiles=float(match.group(1)))
-    raise ValueError(f'{what}: cannot read {value!r}. Write a sparsity '
-                     'percentage such as "90%" (skip 90% of the tiles), or '
-                     'a whole number such as "24" (keep 24 tiles of 128 '
-                     'tokens per query tile).')
+    raise ValueError(veda_status.bilingual(
+        f'{what}: cannot read {value!r}. Write a sparsity percentage such '
+        'as "90%" (skip 90% of the tiles), or a whole number such as "24" '
+        '(keep 24 tiles of 128 tokens per query tile).',
+        f'{what}：看不懂 {value!r}。请写稀疏比例如 "90%"（跳过 90% 的 tile），'
+        '或整数如 "24"（每个 query tile 保留 24 个 128-token 的 tile）。'))
 
 
 def format_index_list(indices: Sequence[int] | frozenset[int]) -> str:

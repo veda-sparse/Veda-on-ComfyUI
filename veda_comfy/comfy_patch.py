@@ -428,6 +428,10 @@ class VedaPatch:
                     f'Chunks: {chunking["chunks_per_layer"]} per layer, '
                     f'{chunking["heads_per_chunk"]} heads each'
                     + (f' ({free / 2**30:.1f} GB free)' if free else ''))
+                workspace = chunking.get('workspace_bytes')
+                if workspace:
+                    lines.append('Attention workspace: '
+                                 f'{workspace / 2**20:.0f} MB at once')
         reasons = ', '.join(f'{r} {n}' for r, n in sorted(run.calls.items())
                             if r != 'sparse')
         lines.append(f'Attention calls: {run.calls.get("sparse", 0)} sparse'
@@ -521,8 +525,9 @@ class VedaPatch:
         idempotent once it is on top.
 
         Also takes over a head-group split requested by KJNodes' Low VRAM
-        node: the H3 forward then hands Veda all heads at once (the sparse
-        path bounds its own memory), and declined calls are split here.
+        node: the H3 forward then hands Veda all heads at once, Veda's
+        sparse path splits into at least that many head chunks itself, and
+        declined calls are split here.
         """
         chunks = transformer_options.get(_HEAD_CHUNKS)
         if isinstance(chunks, int) and chunks > 1:

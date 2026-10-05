@@ -36,6 +36,13 @@ _CHUNK_SHARE = 8
 _MIN_CHUNK_BYTES = 128 * 2**20
 _MAX_CHUNK_BYTES = 1024 * 2**20
 _DEFAULT_CHUNK_BYTES = 256 * 2**20
+# Free memory alone is the wrong bound: on a GPU with room to spare the
+# chunk grows until Veda holds several GB that ComfyUI then cannot use to
+# stage weights (measured 3.24 GB peak against 0.64 GB for full attention,
+# RTX 5070, 1344x768 x 5.2 s). So the chunk is also kept to a share of the
+# layer's own output buffer, which scales with the problem and not with
+# the machine; the free-memory bound still applies on top for small GPUs.
+_WORKING_SET_SHARE = 6
 
 
 class Stats:
@@ -233,17 +240,30 @@ class VedaEngine:
         dtype = q.dtype
         if dtype not in self.backend.dtypes:
             q, k, v = (t.to(self.backend.dtypes[0]) for t in (q, k, v))
+        chunks = 0
+        self.chunking['heads_per_chunk'] = 0
+        # Veda's own transient, measured rather than derived: the bytes
+        # torch holds at the peak of a chunk, counted from before the
+        # layer's output buffer so the number is everything this call
+        # adds. Two counter reads per chunk, no synchronization.
+        measuring = self.device.type == 'cuda'
+        base = torch.cuda.memory_allocated(self.device) if measuring else 0
         out = q.new_empty(seq_len + 1, heads, dim)
         proj_q, proj_k = self._weights(layer)
         chunk_bytes = self._chunk_bytes()
-        chunks = 0
         for group in plan.head_groups(layer, self.device):
             layout = self._tile_layout(spec, group.shape)
             blocks = selection.column_blocks(layout, self.generated,
                                              self.reference)
             per_head = layout.num_slots * dim * q.element_size()
             step = max(1, chunk_bytes // per_head)
-            self.chunking['heads_per_chunk'] = min(step, len(group.heads))
+            step = min(step, max(1, out.numel() * out.element_size()
+                                 // (per_head * _WORKING_SET_SHARE)))
+            # The widest group, not the last one: the groups of a layer
+            # differ in size and the widest is what has to fit.
+            self.chunking['heads_per_chunk'] = max(
+                self.chunking.get('heads_per_chunk', 0),
+                min(step, len(group.heads)))
             for heads_chunk in group.heads.split(step):
                 chunks += 1
                 with timer('gather'):
@@ -264,6 +284,10 @@ class VedaEngine:
                     v_t = tiling.gather_tiles(v, layout, heads_chunk)
                 with timer('attend'):
                     o_t = self.backend.attend(q_t, k_t, v_t, mask, layout)
+                if measuring:
+                    self.chunking['workspace_bytes'] = max(
+                        self.chunking.get('workspace_bytes', 0),
+                        torch.cuda.memory_allocated(self.device) - base)
                 del q_t, k_t, v_t, mask
                 with timer('scatter'):
                     tiling.scatter_tiles_(out, o_t, layout, heads_chunk)

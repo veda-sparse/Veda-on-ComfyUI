@@ -63,6 +63,12 @@
   comfy-aimdo 的显存分配录制（malloc graph）里执行，block 内的分配必须在 block 结束前释放。
   Veda 跨调用保存设备状态（tile 布局、head 组、统计量），kernel 也有自己的 workspace，在录制区
   里分配会让进程直接 abort（Python 的 try/except 接不住）。暂停录制后这些分配走普通分配器。
+- **Veda 的显存开销由问题决定，不由空闲显存决定**：一次注意力按 head 分块，早期只用
+  `free // 8`（上限 1 GB）定块大小，于是显卡越空块越大——实测 1344x768 x 5.2 s 下 Veda 峰值
+  3.24 GB，而全注意力只要 0.64 GB，多出来的几 GB 正是 ComfyUI 拿来搬权重的那部分（issue #1 的
+  OOM 就发生在权重搬运的 MLP 上，而不是 Veda 里）。现在再加一条与机器无关的上限：一个块的
+  tile 缓冲不超过该层输出缓冲的 1 / `_WORKING_SET_SHARE`，即每块约 H/6 个 head。实测峰值
+  3.24 → 1.31 GB，每步耗时不变（13.6 s）。空闲显存那条上限保留，小显存上仍然继续收缩。
 - 打分器权重放在主机内存（bf16），每次调用把这一层的投影（约 11 MB）拷到设备；CUDA 上 pin 住
   做异步拷贝。这样它跟随 ComfyUI 的 offload，而不是常驻 0.5 GB 显存。
 

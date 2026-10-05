@@ -2,14 +2,20 @@
 Veda, same seed, through the HTTP / websocket API.
 
     python tools/e2e_minimax_h3.py --server http://127.0.0.1:8188
+    python tools/e2e_minimax_h3.py --modes lowvram,lowvram+veda,memeff+veda
 
 Builds the API-format graph of the T2VA example workflow (official H3
-template: UNET -> Turbo LoRA -> [Veda] -> BasicGuider, 8 steps), queues it
-once per mode (Veda first, then full attention), and reports per-mode wall
+template: UNET -> Turbo LoRA -> [attention nodes] -> BasicGuider, 8
+steps), queues it once per mode, and reports per-mode wall
 time, per-step sampling time (first step excluded: it compiles kernels),
 Veda's status lines from the node, and the saved video files. The models
-named by the flags must already be in ComfyUI's model folders; the Veda
-predictor is downloaded by the node itself on first use.
+named by the flags must already be in ComfyUI's model folders, the Veda
+predictor in models/veda.
+
+A mode is the chain of attention nodes on the MODEL wire, joined by '+'
+in wire order: `veda`, and KJNodes' `lowvram` ("MiniMax H3 Low VRAM
+Attention"), `memeff` ("MiniMax H3 Mem Eff Sage Attention Patch") and
+`sage` ("Patch Sage Attention KJ"); `dense` is no node at all.
 """
 
 from __future__ import annotations
@@ -61,7 +67,31 @@ def _conditioning(args) -> dict:
                          'ref_images.ref_image_0': ['20', 0]}}}
 
 
-def build_graph(args, veda: bool, prefix: str) -> dict:
+def _chain_node(args, kind: str, model: list) -> dict:
+    """One attention node of a mode's chain, fed by `model`."""
+    if kind == 'veda':
+        return {'class_type': 'VedaSparseAttention',
+                'inputs': {'model': model, 'predictor': args.predictor,
+                           'generated_sparsity': args.sparsity,
+                           'reference_sparsity': args.sparsity,
+                           'full_attention_layers': '',
+                           'full_attention_steps': '',
+                           'verbose': args.verbose}}
+    if kind == 'lowvram':
+        return {'class_type': 'MiniMaxLowVRAMAttention',
+                'inputs': {'model': model, 'head_chunks': args.head_chunks}}
+    if kind == 'memeff':
+        return {'class_type': 'MiniMaxH3MemoryEfficientSageAttentionPatch',
+                'inputs': {'model': model}}
+    if kind == 'sage':
+        return {'class_type': 'PathchSageAttentionKJ',  # sic: KJNodes' id
+                'inputs': {'model': model, 'sage_attention': 'auto',
+                           'allow_compile': False}}
+    raise SystemExit(f'unknown attention node {kind!r} in a mode; use '
+                     'veda, lowvram, memeff, sage or dense')
+
+
+def build_graph(args, mode: str, prefix: str) -> dict:
     """API-format graph of the T2VA / R2VA example workflow."""
     model = ['2', 0]
     graph = {
@@ -99,16 +129,11 @@ def build_graph(args, veda: bool, prefix: str) -> dict:
                           'format': 'auto', 'format.codec': 'auto'}},
     }
     graph.update(_conditioning(args))
-    if veda:
-        graph['3'] = {'class_type': 'VedaSparseAttention',
-                      'inputs': {'model': ['2', 0],
-                                 'predictor': args.predictor,
-                                 'generated_sparsity': args.sparsity,
-                                 'reference_sparsity': args.sparsity,
-                                 'full_attention_layers': '',
-                                 'full_attention_steps': '',
-                                 'verbose': args.verbose}}
-        model = ['3', 0]
+    kinds = [] if mode == 'dense' else mode.split('+')
+    for i, kind in enumerate(kinds):
+        node = '3' if kind == 'veda' else str(30 + i)  # Veda keeps id 3
+        graph[node] = _chain_node(args, kind, model)
+        model = [node, 0]
     graph['11'] = {'class_type': 'BasicGuider',
                    'inputs': {'model': model, 'conditioning': ['7', 0]}}
     return graph
@@ -188,6 +213,8 @@ def main() -> None:
                         help='R2VA reference image in ComfyUI/input')
     parser.add_argument('--sparsity', default='90%')
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--head-chunks', type=int, default=4,
+                        help='head_chunks of the lowvram node')
     parser.add_argument('--unet', default=None)
     parser.add_argument('--lora', default=None)
     parser.add_argument(
@@ -211,8 +238,8 @@ def main() -> None:
         else 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors')
     results = {}
     for mode in args.modes.split(','):
-        graph = build_graph(args, mode == 'veda',
-                            f'veda_e2e/{args.task}_seed{args.seed}_{mode}')
+        graph = build_graph(args, mode, f'veda_e2e/{args.task}_seed'
+                                        f'{args.seed}_{mode.replace("+", "_")}')
         print(f'== {mode}: queued', flush=True)
         report = asyncio.run(run(args.server, graph))
         results[mode] = report

@@ -223,7 +223,8 @@ class VedaEngine:
     @torch.no_grad()
     def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                   layer: int, spec: h3_layout.LayoutSpec,
-                  plan: veda_plans.TilePlan) -> torch.Tensor:
+                  plan: veda_plans.TilePlan,
+                  head_chunks: int = 1) -> torch.Tensor:
         """Veda block-sparse attention of one layer.
 
         Args:
@@ -231,6 +232,11 @@ class VedaEngine:
             layer: DiT block index.
             spec: Layout spec of this sequence.
             plan: Tile plan to use (from plan_for()).
+            head_chunks: Least number of head groups to split the layer
+                into, from a node asking for lower peak memory (KJNodes'
+                Low VRAM attention). Without it the chunk size is only
+                bounded by free memory, which on a GPU with room to spare
+                means one or two large chunks.
 
         Returns:
             [S, H, D] contiguous, q's dtype.
@@ -259,6 +265,8 @@ class VedaEngine:
             step = max(1, chunk_bytes // per_head)
             step = min(step, max(1, out.numel() * out.element_size()
                                  // (per_head * _WORKING_SET_SHARE)))
+            if head_chunks > 1:
+                step = min(step, -(-heads // head_chunks))
             # The widest group, not the last one: the groups of a layer
             # differ in size and the widest is what has to fit.
             self.chunking['heads_per_chunk'] = max(

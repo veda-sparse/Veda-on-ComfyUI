@@ -34,6 +34,9 @@
   后画质悄悄变差而不是报错）。所以 `install` 每一步把请求挪到 `veda_held_head_chunks`、把
   `minimax_head_chunks` 置 1：forward 一次交出全部头，稀疏路径自己按显存分块；Veda 不处理的调用
   在 override 里照 KJ 的公式分组调用，保住它省显存的效果。分组只是按头切开，结果逐位相同。
+  这个分组数同时作为 Veda 自己分块的下限（`engine.attention(head_chunks=...)`）：否则节点接上
+  去对稀疏层毫无作用——Veda 的默认上限已经比 `head_chunks=4` 更紧（实测两者都是 1.31 GB），
+  要求更多时才会继续降（`head_chunks=14`：每块 4 个 head，峰值 1.03 GB）。
 - **整个替换注意力 forward 的节点：在 Veda 之前就接管，在之后就报出来。** KJNodes 的
   "MiniMax H3 Mem Eff Sage Attention Patch" 用 `add_object_patch` 把
   `blocks.N.attn.forward` 换成直接调 sage 的 forward，根本不经过 `optimized_attention`，

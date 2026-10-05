@@ -104,3 +104,27 @@ def test_engine_matches_reference_per_head_group(bundle, monkeypatch):
     torch.testing.assert_close(out, want, rtol=1e-4, atol=1e-4)
     assert engine.stats.kept_fraction() < 0.9
     assert 0.0 < engine.stats.compute_fraction() < 1.0
+
+
+@pytest.mark.parametrize('head_chunks', [1, 2, 4])
+def test_head_chunks_bound_the_chunking_without_changing_the_result(
+        bundle, monkeypatch, head_chunks):
+    """KJNodes' Low VRAM node asks for N head groups to lower peak memory.
+    Veda's own chunking is otherwise bounded only by free memory, so the
+    request has to reach it; heads are independent, so the result is the
+    same whatever the split."""
+    spec = _spec(True)
+    budget = selection.Budget(ratio=0.3)
+    engine = veda_engine.VedaEngine(bundle, budget, budget,
+                                    ReferenceBackend(),
+                                    torch.device('cpu'))
+    # Room for every head at once, so only head_chunks can split it.
+    monkeypatch.setattr(engine, '_chunk_bytes', lambda: 1 << 40)
+    q, k, v = _qkv(spec.seq_len)
+    plan = engine.plan_for(spec).plan
+    unbounded = engine.attention(q, k, v, 0, spec, plan)
+    widest = engine.chunking['heads_per_chunk']
+    out = engine.attention(q, k, v, 0, spec, plan, head_chunks=head_chunks)
+    cap = -(-q.shape[1] // head_chunks)  # what the node asked for
+    assert engine.chunking['heads_per_chunk'] == min(widest, cap)
+    torch.testing.assert_close(out, unbounded, rtol=0, atol=0)

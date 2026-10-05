@@ -343,7 +343,8 @@ class VedaPatch:
         batch, heads, seq_len, dim = q.shape
         out = engine.attention(q[0].transpose(0, 1), k[0].transpose(0, 1),
                                v[0].transpose(0, 1), options['block_index'],
-                               spec, choice.plan)
+                               spec, choice.plan,
+                               head_chunks=options.get(_HELD_HEAD_CHUNKS, 1))
         self.run.calls['sparse'] += 1
         if skip_output_reshape:
             return out.transpose(0, 1).unsqueeze(0)

@@ -15,7 +15,10 @@ exactly that call through `transformer_options["optimized_attention_override"]`:
 
 The override is re-installed on every step (ON_PREPARE_STATE), like
 ComfyUI's own sparse attention node, so a node applied later cannot
-silently replace it. Node text: a few readable lines (kernel, video and
+silently replace it. KJNodes' "MiniMax H3 Low VRAM Attention" splits each
+call into head groups (`minimax_head_chunks`), which would hand Veda a
+slice of heads it cannot map onto the predictor; Veda takes that split
+over instead (see `install`). Node text: a few readable lines (kernel, video and
 plan, sparsity, share of full attention computed); `verbose` adds timing
 and call diagnostics.
 """
@@ -44,9 +47,45 @@ except ImportError:  # older ComfyUI: nothing to pause
     _pause_malloc_graph = contextlib.nullcontext
 
 _KEY = 'veda_sparse_attention'
+# KJNodes' "MiniMax H3 Low VRAM Attention" asks the H3 attention forward to
+# call attention once per head group; Veda moves the request to its own key
+# and splits only the calls it runs as full attention.
+_HEAD_CHUNKS = 'minimax_head_chunks'
+_HELD_HEAD_CHUNKS = 'veda_held_head_chunks'
 _TIMED_PHASES = (('gather', 'gather'), ('score', 'score'),
                  ('select', 'select'), ('attend', 'kernel'),
                  ('scatter', 'scatter'))
+
+
+def _by_head_groups(attend, q, chunks: int, skip_output_reshape: bool):
+    """Full attention in `chunks` head groups, split like KJNodes' Low VRAM
+    node so its peak-memory saving holds on the calls Veda declines.
+
+    Args:
+        attend: `attend(start, end)` runs heads [start, end) and returns
+            [B, S, h*D], or [B, h, S, D] with skip_output_reshape.
+        q: [B, H, S, D], for the shapes.
+        chunks: Number of head groups (> 1).
+        skip_output_reshape: The output layout attention was asked for.
+    """
+    batch, heads, seq_len, dim = q.shape
+    chunks = min(chunks, heads)
+    out = None
+    start = 0
+    for i in range(chunks):
+        end = start + heads // chunks + (1 if i < heads % chunks else 0)
+        part = attend(start, end)
+        if skip_output_reshape:
+            if out is None:
+                out = part.new_empty(batch, heads, seq_len, dim)
+            out[:, start:end] = part
+        else:
+            if out is None:
+                out = part.new_empty(batch, seq_len, heads * dim)
+            out[..., start * dim:end * dim] = part
+        del part
+        start = end
+    return out
 
 
 def _is_interrupt(error: BaseException) -> bool:
@@ -137,16 +176,27 @@ class VedaPatch:
         def override(func, q, k, v, heads, mask=None, attn_precision=None,
                      skip_reshape=False, skip_output_reshape=False,
                      **kwargs):
+            options = kwargs.get('transformer_options') or {}
+
             def dense(reason: str):
                 patch.run.calls[reason] += 1
                 kw = dict(mask=mask, attn_precision=attn_precision,
                           skip_reshape=skip_reshape,
                           skip_output_reshape=skip_output_reshape, **kwargs)
-                if previous is None:
-                    return func(q, k, v, heads, **kw)
-                return previous(func, q, k, v, heads, **kw)
 
-            options = kwargs.get('transformer_options') or {}
+                def attend(q, k, v, heads):
+                    if previous is None:
+                        return func(q, k, v, heads, **kw)
+                    return previous(func, q, k, v, heads, **kw)
+
+                chunks = options.get(_HELD_HEAD_CHUNKS)
+                if reason == 'other attention' or not chunks:
+                    return attend(q, k, v, heads)
+                return _by_head_groups(
+                    lambda a, b: attend(q[:, a:b], k[:, a:b], v[:, a:b],
+                                        b - a),
+                    q, chunks, skip_output_reshape)
+
             layout = options.get('minimax_h3_layout')
             if (mask is not None or not skip_reshape or q.dim() != 4
                     or q.shape[0] != 1 or q.shape != k.shape
@@ -325,7 +375,16 @@ class VedaPatch:
 
     def install(self, transformer_options: dict) -> None:
         """Puts the override on top of whatever override is on the hook;
-        idempotent once it is on top."""
+        idempotent once it is on top.
+
+        Also takes over a head-group split requested by KJNodes' Low VRAM
+        node: the H3 forward then hands Veda all heads at once (the sparse
+        path bounds its own memory), and declined calls are split here.
+        """
+        chunks = transformer_options.get(_HEAD_CHUNKS)
+        if isinstance(chunks, int) and chunks > 1:
+            transformer_options[_HELD_HEAD_CHUNKS] = chunks
+            transformer_options[_HEAD_CHUNKS] = 1
         current = transformer_options.get('optimized_attention_override')
         if current in self.installed:
             return

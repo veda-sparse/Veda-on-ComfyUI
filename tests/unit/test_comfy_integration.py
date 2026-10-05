@@ -207,3 +207,86 @@ def test_node_text_reports_sparsity_not_call_counts(h3, bundle, verbose):
     assert ('Attention calls' in summary) == verbose
     assert 'sparse /' not in summary
     assert patch.calls == {}  # reset for the next run
+
+
+def _low_vram_forward(attn, x, rope_freqs=None, transformer_options={}):
+    """The H3 attention forward as KJNodes' "MiniMax H3 Low VRAM Attention"
+    patches it: one attention call per head group (`minimax_head_chunks`),
+    written into a preallocated output."""
+    from comfy.ldm.modules.attention import optimized_attention
+    import comfy.quant_ops
+    s, heads, dim = x.shape[0], attn.heads, attn.head_dim
+    q, k, v = attn.qkv_proj(x).split(heads * dim, dim=-1)
+    q = q.reshape(1, s, heads, dim)
+    k = k.reshape(1, s, heads, dim)
+    comfy.quant_ops.ck.rms_rope_split_half_(
+        q, k, rope_freqs, attn.q_norm.weight, attn.k_norm.weight,
+        epsilon=attn.q_norm.eps, rot_dim=rope_freqs.shape[-3] * 2)
+    q, k = q[0].transpose(0, 1)[None], k[0].transpose(0, 1)[None]
+    v = v.reshape(s, heads, dim).transpose(0, 1)[None]
+    n = min(transformer_options.get('minimax_head_chunks', 1), heads)
+    out = torch.empty(s, heads * dim, dtype=x.dtype)
+    start = 0
+    for i in range(n):
+        end = start + heads // n + (1 if i < heads % n else 0)
+        part = optimized_attention(
+            q[:, start:end], k[:, start:end], v[:, start:end], end - start,
+            mask=None, skip_reshape=True,
+            transformer_options=transformer_options)
+        out[:, start * dim:end * dim] = part.squeeze(0)
+        start = end
+    return attn.out_proj(out)
+
+
+@pytest.fixture
+def low_vram(h3, monkeypatch):
+    import types
+    _, model = h3
+    for block in model.blocks:
+        monkeypatch.setattr(block.attn, 'forward',
+                            types.MethodType(_low_vram_forward, block.attn))
+
+
+def test_kjnodes_head_chunks_still_run_sparse(h3, bundle, low_vram):
+    """Without the takeover Veda saw HEADS / chunks heads per call and
+    switched itself off ("the model has 14 heads, the predictor expects
+    56")."""
+    del low_vram
+    reference = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+    expected, _ = _forward(h3, 't2va', reference)
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+    h3_model, model = h3
+    x, context, payload = _inputs(h3_model, 't2va')
+    options = {'minimax_head_chunks': HEADS}
+    patch.install(options)
+    patch.install(options)  # every step: the held count survives
+    with torch.no_grad():
+        out = model(x, torch.tensor([500.0]), context,
+                    transformer_options=options, minimax_payload=payload)
+    assert patch.calls == {'sparse': LAYERS}
+    for a, b in zip(expected, out):
+        torch.testing.assert_close(a, b, rtol=1e-5, atol=1e-5)
+
+
+def test_declined_calls_keep_the_kjnodes_head_split(h3, bundle, low_vram):
+    del low_vram
+    dense, _ = _forward(h3, 't2va')
+    seen = []
+
+    def previous(func, q, k, v, heads, **kwargs):
+        seen.append(heads)
+        return func(q, k, v, heads, **kwargs)
+
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1},
+                   dense_layers=frozenset(range(LAYERS)))
+    h3_model, model = h3
+    x, context, payload = _inputs(h3_model, 't2va')
+    options = {'optimized_attention_override': previous,
+               'minimax_head_chunks': HEADS}
+    patch.install(options)
+    with torch.no_grad():
+        out = model(x, torch.tensor([500.0]), context,
+                    transformer_options=options, minimax_payload=payload)
+    assert seen == [1] * HEADS * LAYERS
+    for a, b in zip(dense, out):
+        torch.testing.assert_close(a, b, rtol=1e-4, atol=1e-4)

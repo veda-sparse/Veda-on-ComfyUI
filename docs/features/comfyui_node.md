@@ -28,6 +28,12 @@
     override（或 ComfyUI 的默认注意力），所以其他注意力节点照样生效。
 - 每一步（`ON_PREPARE_STATE`）重新把 override 放到最上层，和 ComfyUI 自带的稀疏注意力节点
   一样，避免后应用的节点悄悄覆盖；`ON_CLEANUP` 时在节点上显示本次运行的统计并清空运行状态。
+- **KJNodes 的按头分组（`minimax_head_chunks`）由 Veda 接管**："MiniMax H3 Low VRAM Attention"
+  让 H3 的注意力 forward 把 56 个头切成 N 组、每组调一次 `optimized_attention`。Veda 拿到的是
+  头的一个切片，既对不上打分器，也无从知道是第几组（从调用顺序去猜，一次异常就会错位，而且错位
+  后画质悄悄变差而不是报错）。所以 `install` 每一步把请求挪到 `veda_held_head_chunks`、把
+  `minimax_head_chunks` 置 1：forward 一次交出全部头，稀疏路径自己按显存分块；Veda 不处理的调用
+  在 override 里照 KJ 的公式分组调用，保住它省显存的效果。分组只是按头切开，结果逐位相同。
 - ComfyUI 自带的 "Model Sparse Attention" 在 H3 上用 block patch 直接替换注意力，Veda 的
   override 就不会被调用；节点检测到它时给出警告，而不是静默无效。
 - **不坏图**：稀疏路径里的任何异常（OOM、kernel 失败）都被捕获，提示后本次运行剩余部分走全注意力；
@@ -71,7 +77,9 @@
 
 - `tests/unit/test_comfy_integration.py`：用 ComfyUI 真实的 `MiniMaxH3Model.forward`（小随机
   模型）跑 T2VA / FL2VA / R2VA：全保留预算必须复现全注意力（1e-4）；90% 稀疏时每个 block 都走
-  稀疏路径；reference 段数正确；`full_attention_*` 生效；拒绝的调用到达之前的 override。
+  稀疏路径；reference 段数正确；`full_attention_*` 生效；拒绝的调用到达之前的 override；
+  照 KJNodes Low VRAM 节点按头分组的 forward 下仍然每层稀疏、结果与不分组相同，拒绝的调用
+  仍按头分组。
 - `tests/unit/test_nodes.py`：schema（只有 model / predictor 可见）、各种错误信息、patch 安装。
 - `tests/unit/test_predictors.py`：发布元数据被钉死（完整 commit、sha256）、URL 指向该
   revision、缺文件时的提示包含地址，以及**模块里不出现网络/环境变量字样**。
@@ -105,6 +113,10 @@
   就 "Fatal Python error: Aborted"。CPU 集成测试发现不了（malloc graph 只在 CUDA 上启用）。
   对策见上；`tests/gpu` 之外，任何 GPU 改动都要用 `tools/e2e_minimax_h3.py` 在真实 ComfyUI 里
   跑一遍。
+
+- **KJNodes "MiniMax H3 Low VRAM Attention" 让 Veda 关掉**：节点显示 "Veda off: the model has
+  14 heads of dim 128, the predictor expects 56 x 128"（`head_chunks=4`；6 组时是 10/9，最后显示
+  9）。原因：它按头分组调用注意力，Veda 每次只看到一组头。对策见上「按头分组由 Veda 接管」。
 
 ## 验证记录
 

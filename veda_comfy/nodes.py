@@ -138,6 +138,10 @@ class VedaSparseAttention(io.ComfyNode):
                     tooltip=f'Veda predictor in models/{FOLDER}. The '
                             'official release is downloaded automatically '
                             'on first use (set HF_ENDPOINT for a mirror).'),
+                io.Combo.Input(
+                    'kernel', options=['Veda INT8', 'Sol + Veda'],
+                    default='Veda INT8', advanced=True,
+                    tooltip='Veda INT8 or Sol + Veda hybrid attention.'),
                 io.String.Input(
                     'generated_sparsity', default='90%', advanced=True,
                     tooltip='Sparsity of the generated video\'s attention. '
@@ -173,7 +177,8 @@ class VedaSparseAttention(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, predictor, generated_sparsity='90%',
+    def execute(cls, model, predictor, kernel='Veda INT8',
+                generated_sparsity='90%',
                 reference_sparsity='90%', full_attention_layers='',
                 full_attention_steps='', verbose=False) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
@@ -200,10 +205,15 @@ class VedaSparseAttention(io.ComfyNode):
                              f'0-{num_layers - 1}; '
                              f'{veda_settings.format_index_list(missing)} '
                              'do not exist.')
-        patched, _ = comfy_patch.apply(model, bundle, settings, node_id)
+        backend_name = {'Veda INT8': 'triton-int8',
+                        'Sol + Veda': 'sol-veda'}.get(kernel)
+        if backend_name is None:
+            raise ValueError(f'Unknown attention kernel: {kernel!r}')
+        patched, _ = comfy_patch.apply(model, bundle, settings, node_id,
+                                        backend_name=backend_name)
         device = comfy.model_management.get_torch_device()
         info = hardware.describe(device)
-        probe = backends.probe(device)
+        probe = backends.probe(device, backend_name)
         usable = [display for _, display, error in probe if error is None]
         lines = [f'Veda ready · {usable[0] if usable else "full attention"}'
                  f' · {info.short_name}',

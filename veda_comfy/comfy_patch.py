@@ -70,9 +70,10 @@ class VedaPatch:
     """Options and runtime state of one patched model."""
 
     def __init__(self, bundle, settings: veda_settings.VedaSettings,
-                 node_id: str | None):
+                 node_id: str | None, backend_name: str = 'triton-int8'):
         self.bundle = bundle
         self.settings = settings
+        self.backend_name = backend_name
         self.status = veda_status.NodeStatus(node_id)
         self.installed: set = set()
         self._engines: dict[str, veda_engine.VedaEngine | None] = {}
@@ -90,8 +91,8 @@ class VedaPatch:
         key = str(device)
         if key not in self._engines:
             resolution = backends.resolve(
-                device,
-                notify=self.status.show)
+                device, notify=self.status.show,
+                preferred=self.backend_name)
             if resolution.backend is None:
                 self.status.warn(
                     f'Veda off: no sparse kernel works on '
@@ -345,9 +346,9 @@ class VedaPatch:
 
 
 def apply(model, bundle, settings: veda_settings.VedaSettings,
-          node_id: str | None):
+          node_id: str | None, backend_name: str = 'triton-int8'):
     """Returns a clone of `model` with Veda attention installed."""
-    patch = VedaPatch(bundle, settings, node_id)
+    patch = VedaPatch(bundle, settings, node_id, backend_name)
     patched = model.clone()
     patch.install(patched.model_options.setdefault('transformer_options', {}))
     patched.add_callback_with_key(

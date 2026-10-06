@@ -1,6 +1,6 @@
 """Backend registry: which kernel runs on which device.
 
-    CUDA sm80 and up    triton-int8
+    CUDA sm80 and up    triton-int8 or sol-veda (explicit node choice)
     Apple MPS           mlx
     anything else       nothing (the node runs the model's own attention)
 
@@ -31,7 +31,8 @@ import torch
 from . import base
 from .. import hardware
 
-_MODULES = {'triton-int8': 'triton_int8', 'mlx': 'mlx_gather'}
+_MODULES = {'triton-int8': 'triton_int8', 'mlx': 'mlx_gather',
+            'sol-veda': 'sol_veda'}
 _MIN_CC = (8, 0)
 
 
@@ -58,10 +59,12 @@ class Resolution:
         return '; '.join(f'{name}: {status}' for name, status in self.attempts)
 
 
-def candidates(info: hardware.DeviceInfo) -> list[str]:
+def candidates(info: hardware.DeviceInfo,
+               preferred: str | None = None) -> list[str]:
     """The backend to try on a device; empty if none applies."""
     if info.kind == 'cuda' and info.family != 'rocm' and info.cc:
-        return ['triton-int8'] if info.cc >= _MIN_CC else []
+        names = ['triton-int8', 'sol-veda'] if info.cc >= _MIN_CC else []
+        return [preferred] if preferred in names else names
     if info.kind == 'mps':
         return ['mlx']
     return []
@@ -72,7 +75,8 @@ _RESOLVED: dict[str, Resolution] = {}
 
 
 def resolve(device: torch.device,
-            notify: Callable[[str], None] | None = None) -> Resolution:
+            notify: Callable[[str], None] | None = None,
+            preferred: str | None = None) -> Resolution:
     """Loads and self-tests the backend for `device` (cached).
 
     Args:
@@ -87,7 +91,7 @@ def resolve(device: torch.device,
             return _RESOLVED[key]
         attempts: list[tuple[str, str]] = []
         chosen = None
-        for name in candidates(info):
+        for name in candidates(info, preferred):
             try:
                 backend = _load(name, info)
                 note = backend.warmup_note()
@@ -110,13 +114,14 @@ def resolve(device: torch.device,
         return resolution
 
 
-def probe(device: torch.device) -> list[tuple[str, str, str | None]]:
+def probe(device: torch.device, preferred: str | None = None
+          ) -> list[tuple[str, str, str | None]]:
     """(name, display name, error or None) for the device's backend,
     without compiling or self-testing (cheap; for the status shown before
     sampling)."""
     info = hardware.describe(device)
     out = []
-    for name in candidates(info):
+    for name in candidates(info, preferred):
         try:
             backend = _load(name, info)
             out.append((backend.name, backend.display, None))

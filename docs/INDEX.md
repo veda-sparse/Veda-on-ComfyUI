@@ -9,6 +9,7 @@ feature 文档的「踩坑记录」，并在 `pitfalls.md` 加一行索引。
 | [features/core_selection.md](features/core_selection.md) | H3 布局映射、tile 排列、方案表选择、打分、generated / reference 预算与选择规则、引擎 | CPU 测试通过 |
 | [features/backends.md](features/backends.md) | 后端契约、自检、容差、一个设备一个 kernel | mlx 在 MPS 通过；CUDA 见 hardware.md |
 | [features/int8_kernel.md](features/int8_kernel.md) | Triton INT8 块稀疏 kernel：为什么是 INT8 不是 FP8、为什么没有 fallback、设计与性能 | RTX 5070 验证通过；TMA 已实测更慢，默认关闭 |
+| [features/sol_veda.md](features/sol_veda.md) | Sol correction 与 Veda predictor/Sage INT8 的混合方案及移植边界 | ComfyUI kernel 尚未完成 |
 | [features/packaging_release.md](features/packaging_release.md) | 依赖自动安装、Comfy Registry 打包与发布、示例工作流、CI | 当前 |
 | [hardware.md](hardware.md) | 硬件支持矩阵与验证记录 | 持续更新 |
 | [dependencies.md](dependencies.md) | 外部依赖、锁定版本 | 当前 |

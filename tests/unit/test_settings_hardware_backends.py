@@ -137,3 +137,49 @@ def test_mlx_and_torch_backends_on_mps():
     from veda_comfy.backends import mlx_gather
     info = hardware.describe('mps')
     base.self_test(mlx_gather.create(info), torch.device('mps'))
+
+
+def test_an_rtx_3090_is_a_candidate_like_every_sm80_and_up_gpu():
+    """One Triton kernel covers SM80 upwards, so SM86 takes the same path
+    as SM89; a 3090 reaching the self-test is expected, not a mismatch."""
+    info = _info((8, 6), 'NVIDIA GeForce RTX 3090')
+    assert backends.candidates(info) == ['triton-int8']
+
+
+_TCC_ERROR = base.BackendUnavailable(
+    "triton-int8 failed its self-test: CalledProcessError: Command "
+    "'['...\\\\triton\\\\runtime\\\\tcc\\\\tcc.exe', '...\\\\cuda_utils.c', "
+    "'-O3', '-shared']' returned non-zero exit status 1.")
+
+
+def test_triton_backend_explains_a_failed_helper_build():
+    from veda_comfy.backends import triton_int8
+    backend = triton_int8.TritonInt8Backend('SM86')
+    hint = backend.explain_failure(_TCC_ERROR)
+    assert hint and 'python_embeded' in hint and '.triton' in hint
+    # Unrelated failures are left to speak for themselves.
+    assert backend.explain_failure(RuntimeError('out of memory')) is None
+
+
+def _resolution(attempts, hints=()):
+    return backends.Resolution(_info((8, 6), 'NVIDIA GeForce RTX 3090'),
+                               None, list(attempts), list(hints))
+
+
+def test_a_supported_gpu_whose_kernel_failed_is_not_blamed():
+    """The node used to say "no sparse kernel works on RTX 3090 (SM86)"
+    when the kernel was right for the GPU and its build had failed, which
+    sends people hunting for a hardware problem they do not have."""
+    from veda_comfy import comfy_patch
+    broken = _resolution([('triton-int8', str(_TCC_ERROR))], ['copy libs'])
+    assert broken.has_candidate
+    english, chinese = comfy_patch._no_kernel_text(broken)
+    assert 'RTX 3090 (SM86) is supported' in english
+    assert 'copy libs' in english and 'copy libs' in chinese
+    assert '本身是支持的' in chinese
+
+    unsupported = _resolution([])
+    assert not unsupported.has_candidate
+    english, chinese = comfy_patch._no_kernel_text(unsupported)
+    assert 'has no sparse kernel' in english and 'SM80' in english
+    assert '没有可用的稀疏 kernel' in chinese

@@ -57,6 +57,11 @@
   ComfyUI 的中断异常照常抛出。
 - **可见的回退**：没有可用 kernel、布局读不懂、未训练的尺寸、头数不匹配……每一种都在节点上显示
   一次（`status.NodeStatus` → `send_progress_text`），不需要前端扩展。
+- **"硬件不支持"和"装坏了"要分开说**：`Resolution.has_candidate` 为假才是这张卡不在范围内；
+  为真而 `backend` 是 None，说明覆盖它的 kernel 没能在这台机器上启动起来，那是环境问题。
+  两者的提示完全不同，混在一起会让用户去查一个并不存在的硬件问题（3090 的例子见
+  hardware.md）。具体怎么修只有后端自己知道，所以由 `Backend.explain_failure(error)` 返回，
+  registry 收集到 `Resolution.hints`——这样 Triton 的知识留在 Triton 后端里（规则 1.6）。
 - **警告和错误中英双语，界面文字跟随语言**：`send_progress_text` 和 `ValueError` 都是后端发出的
   字符串，而后端不知道每个浏览器的界面语言（多个浏览器可以同时连同一个 ComfyUI），所以无法
   "自适应"。因此运行时的警告与错误一律英文在前、中文在后，每条先说 Veda 是否在跑，再说怎么办；

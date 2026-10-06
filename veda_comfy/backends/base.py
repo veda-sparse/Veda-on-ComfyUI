@@ -71,6 +71,16 @@ class Backend(abc.ABC):
         """What the first call does that takes a while, if anything."""
         return None
 
+    def explain_failure(self, error: BaseException) -> str | None:
+        """How the user can fix `error`, if this backend recognises it.
+
+        A backend that reached its self-test is right for the GPU, so a
+        failure here is almost always the toolchain around it rather than
+        the hardware; only the backend knows what its own build needs.
+        """
+        del error
+        return None
+
 
 def selftest_problem(device: torch.device, dtype: torch.dtype, seed: int = 0):
     """A small problem with every hard case: history and target spans,

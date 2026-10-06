@@ -131,6 +131,32 @@ def describe_forward(forward) -> str:
     return f'{name} ({module})' if module else name
 
 
+def _no_kernel_text(resolution) -> tuple[str, str]:
+    """(English, Chinese) for a device that ends up on full attention.
+
+    A GPU with no candidate kernel is out of scope; a GPU whose kernel
+    failed to start is supported and something around it is broken, so
+    saying "no kernel works on your GPU" there sends people looking for
+    a hardware problem they do not have.
+    """
+    label = resolution.device.label
+    if not resolution.has_candidate:
+        return (f'Veda off: {label} has no sparse kernel; using full '
+                'attention. Veda needs an NVIDIA GPU of SM80 (RTX 30 '
+                'series) or newer, or Apple silicon.',
+                f'Veda 未启用：{label} 没有可用的稀疏 kernel，本次使用全'
+                '注意力。Veda 需要 SM80（RTX 30 系）或更新的 NVIDIA 显卡，'
+                '或者 Apple 芯片。')
+    lines = [f'Veda off: {label} is supported, but its sparse kernel did '
+             'not start on this install; using full attention.',
+             resolution.report()]
+    zh = [f'Veda 未启用：{label} 本身是支持的，但这台机器上的稀疏 kernel '
+          '没能启动，本次使用全注意力。原因见上。']
+    lines += resolution.hints
+    zh += resolution.hints
+    return '\n'.join(lines), '\n'.join(zh)
+
+
 def _is_interrupt(error: BaseException) -> bool:
     # comfy.model_management.InterruptProcessingException, without importing
     # it at module scope.
@@ -178,12 +204,7 @@ class VedaPatch:
                 device,
                 notify=self.status.show)
             if resolution.backend is None:
-                self.status.warn(
-                    f'Veda off: no sparse kernel works on '
-                    f'{resolution.device.label}; using full attention\n'
-                    f'{resolution.report()}',
-                    zh=f'Veda 未启用：{resolution.device.label} 上没有可用的'
-                       '稀疏 kernel，本次使用全注意力（原因见上）。')
+                self.status.warn(*_no_kernel_text(resolution))
                 self._engines[key] = None
             else:
                 engine = veda_engine.VedaEngine(

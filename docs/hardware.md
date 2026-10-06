@@ -5,7 +5,7 @@
 
 | 硬件 | SM | kernel | Windows | Linux | 备注 |
 |---|---|---|---|---|---|
-| RTX 30（3090 等）、RTX A 系列 | sm86 | triton-int8 | 🧪 | 🧪 | 静态审查过，见 int8_kernel.md |
+| RTX 30（3090 等）、RTX A 系列 | sm86 | triton-int8 | 🧪 | 🧪 | 静态审查过，见 int8_kernel.md；3090 上有用户走到了自检，卡在 Triton 自己的编译环境上（见下） |
 | A100 | sm80 | triton-int8 | — | 🧪 | |
 | RTX 40（4090 等）、L4 / L40、RTX 6000 Ada | sm89 | triton-int8 | 🧪 | 🧪 | 静态审查过，见 int8_kernel.md |
 | H100 / H200 | sm90 | triton-int8 | — | 🧪 | TMA 可用（有 cluster），尚未利用 |
@@ -56,6 +56,16 @@
     只看注意力是 31.1 → 15.2 → 4.41。Veda 的 4.41 s/步里 kernel 2.95、gather 0.66、打分 0.46、
     scatter 0.23、选块 0.10。这一步剩下的 9.6 s 是 MLP 与 12 GB 显存下的权重搬运，占 69%——
     注意力侧的全部开销（1.46 s）清零也只有 1.11x，所以优化重心不在这里。
+- 2026-10-06，RTX 3090（SM86），Windows portable ComfyUI，Python 3.13，CUDA 13.0 —
+  **用户报告，不是我们跑的测试**：节点显示 "Veda off: no sparse kernel works on RTX 3090
+  (SM86)"，下面跟着 `triton-int8 failed its self-test: CalledProcessError: ... tcc.exe ...
+  cuda_utils.c ... exit status 1`。**和 SM86 无关**：候选表对 SM80 起的卡只有
+  `triton-int8` 一个，3090 已经通过了 `_MIN_CC` 并走到自检，失败的是 Triton 第一次调用时用
+  C 编译器构建 `cuda_utils.c` 这个辅助模块——portable 版的 `python_embeded` 不带头文件和
+  导入库，tcc 找不到 `Python.h` / `python313.lib` 就以 1 退出，而它自己的输出被
+  `CalledProcessError` 吞掉了（triton-windows 的 issue 83 / 156 / 186 是同一条）。对策：把
+  对应版本 python.org 构建里的 `Include\` 和 `libs\` 复制进 `python_embeded\`，删掉
+  `%USERPROFILE%\.triton\cache` 再重启。节点现在会这么说，而不是去怪显卡。
 - 2026-10-06，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，triton-windows
   3.8.0，SageAttention 2.2.0+cu130，ComfyUI 0.38.0 + KJNodes 1.5.2**：与其他注意力节点的
   交叉验证，以及显存开销的定位（`tools/e2e_minimax_h3.py`，T2VA FL2VA int8 + 8 步 Turbo

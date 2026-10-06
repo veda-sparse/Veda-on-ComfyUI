@@ -48,11 +48,21 @@ class Resolution:
         device: The device info.
         backend: The backend to use, None if nothing works (run dense).
         attempts: (candidate, 'ok' or why it was skipped), in order.
+        hints: What the user can do about the failures, from the backends
+            that recognised their own (`Backend.explain_failure`).
     """
 
     device: hardware.DeviceInfo
     backend: base.Backend | None
     attempts: list[tuple[str, str]]
+    hints: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def has_candidate(self) -> bool:
+        """Whether a kernel covers this device at all. False means the
+        hardware is out of scope; True with `backend` None means the
+        kernel that covers it did not start here."""
+        return bool(self.attempts)
 
     def report(self) -> str:
         return '; '.join(f'{name}: {status}' for name, status in self.attempts)
@@ -65,6 +75,21 @@ def candidates(info: hardware.DeviceInfo) -> list[str]:
     if info.kind == 'mps':
         return ['mlx']
     return []
+
+
+def _add_hint(hints: list[str], backend: base.Backend | None,
+              error: BaseException) -> None:
+    """Appends the backend's advice for `error`, if it has any."""
+    if backend is None:
+        return
+    try:
+        hint = backend.explain_failure(error)
+    except Exception:  # advice must never be the thing that breaks
+        logging.warning('Veda: %s could not explain a failure',
+                        backend.name, exc_info=True)
+        return
+    if hint and hint not in hints:
+        hints.append(hint)
 
 
 _LOCK = threading.RLock()
@@ -86,8 +111,10 @@ def resolve(device: torch.device,
         if key in _RESOLVED:
             return _RESOLVED[key]
         attempts: list[tuple[str, str]] = []
+        hints: list[str] = []
         chosen = None
         for name in candidates(info):
+            backend = None
             try:
                 backend = _load(name, info)
                 note = backend.warmup_note()
@@ -96,16 +123,18 @@ def resolve(device: torch.device,
                 base.self_test(backend, device)
             except base.BackendUnavailable as error:
                 attempts.append((name, str(error)))
+                _add_hint(hints, backend, error)
                 continue
             except Exception as error:  # a broken backend must not crash
                 logging.warning('Veda: backend %s failed to load', name,
                                 exc_info=True)
                 attempts.append((name, f'{type(error).__name__}: {error}'))
+                _add_hint(hints, backend, error)
                 continue
             attempts.append((backend.name, 'ok'))
             chosen = backend
             break
-        resolution = Resolution(info, chosen, attempts)
+        resolution = Resolution(info, chosen, attempts, hints)
         _RESOLVED[key] = resolution
         return resolution
 

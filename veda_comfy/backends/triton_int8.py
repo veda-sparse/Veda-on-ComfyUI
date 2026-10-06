@@ -57,6 +57,23 @@ class TritonInt8Backend(base.Backend):
     def warmup_note(self) -> str:
         return 'compiling Triton kernels for this GPU (first run only)'
 
+    def explain_failure(self, error: BaseException) -> str | None:
+        # Triton builds a small helper module (cuda_utils.c) with a C
+        # compiler on the first call. On the Windows portable ComfyUI that
+        # build is what breaks: the embedded Python ships without its
+        # headers and import library, so the compiler cannot find
+        # Python.h / pythonXY.lib and exits 1 with its own output
+        # swallowed (triton-windows issues 83, 156, 186). Nothing to do
+        # with the GPU, so say so rather than let the node blame it.
+        text = f'{type(error).__name__}: {error}'
+        if 'CalledProcessError' not in text or 'cuda_utils' not in text:
+            return None
+        return ('Triton could not build its CUDA helper on this install. '
+                'On ComfyUI portable this is the embedded Python missing '
+                'its C headers: copy Include\\ and libs\\ from the '
+                'matching python.org build into python_embeded\\, delete '
+                '%USERPROFILE%\\.triton\\cache, and restart ComfyUI.')
+
 
 def create(info) -> base.Backend:
     if info.kind != 'cuda' or info.cc is None or info.cc < _MIN_CC:

@@ -56,6 +56,31 @@
     只看注意力是 31.1 → 15.2 → 4.41。Veda 的 4.41 s/步里 kernel 2.95、gather 0.66、打分 0.46、
     scatter 0.23、选块 0.10。这一步剩下的 9.6 s 是 MLP 与 12 GB 显存下的权重搬运，占 69%——
     注意力侧的全部开销（1.46 s）清零也只有 1.11x，所以优化重心不在这里。
+- 2026-10-06，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，triton-windows
+  3.8.0，SageAttention 2.2.0+cu130，ComfyUI 0.38.0 + KJNodes 1.5.2**：与其他注意力节点的
+  交叉验证，以及显存开销的定位（`tools/e2e_minimax_h3.py`，T2VA FL2VA int8 + 8 步 Turbo
+  LoRA，1344x768，124 帧 = 5.2 秒，2 步，seed 42；**每个配置前重启 ComfyUI**，否则峰值会被
+  上一次运行的残留影响——同一组参数顺序测会得出 1.61 GB，单独测是 3.24 GB）。
+
+  | 配置 | 每步 | 峰值显存 | 每层分块 |
+  |---|---|---|---|
+  | 全注意力 | 39.3 s | 0.64 GB | - |
+  | Low VRAM 节点（head_chunks=4） | 39.6 s | 0.64 GB | - |
+  | Veda（本次修复前） | 13.6 s | 3.24 GB | 6 x 12 head |
+  | Veda | 13.6 s | **1.31 GB** | 8 x 8 head |
+  | Low VRAM + Veda | 13.6 s | 1.31 GB | 8 x 8 head |
+  | Low VRAM（head_chunks=14）+ Veda | 14.3 s | 1.03 GB | 15 x 4 head |
+  | Mem Eff Sage 节点 | 24.2 s | - | - |
+  | Mem Eff Sage + Veda（被 Veda 接管） | 13.5 s | - | - |
+
+  - 三个上报的问题都复现并修掉了：Low VRAM 节点下 Veda 不再因为只看到 14 / 9 个 head 而关闭
+    （`Attention calls: 100 sparse`）；Mem Eff Sage 在 Veda 之前时被接管（24.2 → 13.5 s/步），
+    在 Veda 之后时节点给出提示而不是沉默。
+  - **Low VRAM 节点单独用在 5.2 s 上看不出省显存**（0.64 GB，和全注意力一样）：它缩小的是
+    kernel 的内部临时量，而这个尺寸下的峰值由 ComfyUI 的权重搬运决定。
+  - **14.4 s（104k token）在 12 GB 卡上是跑不动的**：Veda 与 Low VRAM + Veda 都是 2.77 GB
+    峰值、约 1400 s/步、`free 0.00 GB`，即全程在换权重。Veda 这时的 1906 MB 工作集里有
+    1.49 GB 是该层的输出缓冲（104k x 56 x 128 x 2），全注意力同样要付，没有可压缩的空间。
 - 2026-10-04，Apple M3 Pro（macOS），torch 2.14.1 + MLX 0.32.3：`tests/gpu` 2 passed /
   1 skipped（INT8 对照需要 CUDA），`tests/unit` 96 passed。覆盖的是把 `mx.eval` 收进
   `_flusher` 并删掉 `_to_torch` 前那次多余 flush 的改动——Metal 自检与 fp32 参考比对都过。

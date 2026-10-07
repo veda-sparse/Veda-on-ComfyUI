@@ -65,6 +65,16 @@ _HELD_HEAD_CHUNKS = 'veda_held_head_chunks'
 # KJNodes' convention: a forward that still calls `optimized_attention` is
 # marked with this attribute, and a node that installs one for sparse
 # attention to use leaves it under `sol_take_forward` (its Low VRAM node).
+# Why a call that reached the DiT block loop was still declined. Kept
+# apart from 'other attention' so they count towards the summary (they
+# did run, at full cost) and so a report says which one it was: the token
+# refiner also sees a layout that does not match its sequence, but it
+# never runs inside the block loop, so block_index tells them apart.
+_NO_LAYOUT = 'no H3 layout for this call'
+_WRONG_LAYOUT = 'layout from another pass'
+_MASKED = 'masked attention'
+_ODD_SHAPES = 'unexpected q / k / v shapes'
+_DECLINED = (_NO_LAYOUT, _WRONG_LAYOUT, _MASKED, _ODD_SHAPES)
 _COMPOSES = '_uses_optimized_attention'
 TAKE_FORWARD = 'sol_take_forward'
 _ATTN_FORWARD = re.compile(r'diffusion_model\.blocks\.(\d+)\.attn\.forward')
@@ -267,11 +277,19 @@ class VedaPatch:
                     q, chunks, skip_output_reshape)
 
             layout = options.get('minimax_h3_layout')
-            if (mask is not None or not skip_reshape or q.dim() != 4
-                    or q.shape[0] != 1 or q.shape != k.shape
-                    or q.shape != v.shape or layout is None
-                    or getattr(layout, 'seq_len', None) != q.shape[2]):
-                return dense('other attention')
+            reason = None
+            if mask is not None:
+                reason = _MASKED
+            elif (not skip_reshape or q.dim() != 4 or q.shape[0] != 1
+                  or q.shape != k.shape or q.shape != v.shape):
+                reason = _ODD_SHAPES
+            elif layout is None:
+                reason = _NO_LAYOUT
+            elif getattr(layout, 'seq_len', None) != q.shape[2]:
+                reason = _WRONG_LAYOUT
+            if reason is not None:
+                return dense(reason if isinstance(options.get('block_index'),
+                                                  int) else 'other attention')
             if options.get('block_index') == 0:
                 patch.run.evaluations += 1
             reason = patch._dense_reason(q, options)
@@ -417,6 +435,14 @@ class VedaPatch:
         configured = self.settings.describe_full_attention()
         if configured:
             lines.append(f'Full attention: {configured}')
+        declined = {r: n for r, n in run.calls.items() if r in _DECLINED}
+        if declined:
+            why = ', '.join(f'{r} ({n})' for r, n in sorted(declined.items()))
+            lines.append(
+                f'{sum(declined.values())} attention calls ran at full cost '
+                f'- {why}. Veda places its tiles from the layout this pass '
+                'reports, so a stage at another resolution, or a tiled '
+                'high-resolution stage, runs unaccelerated.')
         if run.failed:
             lines.append(f'Fell back to full attention after: {run.failed}')
         if self.settings.verbose:
@@ -567,7 +593,7 @@ class VedaPatch:
         summary = self._summary()
         if summary:
             self.status.show(summary)
-        elif self.run.prepared and not any(
+        elif self.run.prepared and not self.run.calls and not any(
                 isinstance(key, tuple) and key[0] == 'replaced'
                 for key in self.run.announced):
             self.status.warn(

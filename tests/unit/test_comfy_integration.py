@@ -354,3 +354,81 @@ def test_routed_forward_runs_sparse_and_keeps_the_replacement(
     assert patch.calls == {'sparse': LAYERS - 1, 'full-attention layer': 1}
     # The replacing forward gets block 1 and its head split back.
     assert seen == [(1, 2)]
+
+
+def _decline(patch, **options):
+    """Runs one attention call through the override, with options that
+    make Veda decline it, and returns the reason it recorded."""
+    def func(q, k, v, heads, **kwargs):
+        del k, v, heads, kwargs
+        return q
+
+    q = torch.zeros(1, HEADS, 64, 128)
+    patch.make_override(None)(func, q, q, q, HEADS, skip_reshape=True,
+                              transformer_options=options)
+    return next(iter(patch.run.calls))
+
+
+class _OtherLayout:
+    """An H3 layout describing a different sequence than this call."""
+    seq_len = 4096
+
+
+def _wrong_layout_reason():
+    from veda_comfy import comfy_patch
+    return comfy_patch._WRONG_LAYOUT
+
+
+def test_a_declined_call_reports_which_condition_declined_it(bundle):
+    from veda_comfy import comfy_patch
+    for options, want in [
+            ({'block_index': 1}, comfy_patch._NO_LAYOUT),
+            ({'block_index': 1, 'minimax_h3_layout': _OtherLayout()},
+             comfy_patch._WRONG_LAYOUT)]:
+        patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+        assert _decline(patch, **options) == want
+
+
+def test_a_second_stage_pass_is_told_apart_from_the_text_refiner(bundle):
+    """Both see a layout that does not match their sequence; only the DiT
+    runs inside the block loop, which is what block_index marks."""
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+    assert _decline(patch, minimax_h3_layout=_OtherLayout(),
+                    block_index=3) == _wrong_layout_reason()
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+    assert _decline(patch, minimax_h3_layout=_OtherLayout()) == (
+        'other attention')
+
+
+def _cleanup_text(bundle, calls):
+    patch = _patch(bundle, {'ratio': 0.1}, {'ratio': 0.1})
+    said = []
+    patch.status.show = lambda t, *a, **k: said.append(('show', t))
+    patch.status.warn = lambda t, *a, **k: said.append(('warn', t))
+    patch.run.prepared = True
+    patch.run.calls.update(calls)
+    patch.on_cleanup()
+    return said
+
+
+def test_a_pass_veda_could_not_map_is_reported_not_blamed_on_a_node(bundle):
+    """issue #2: a selflift sampler's second, higher-resolution pass sent
+    Veda 100 calls it had to decline. They counted as neither sparse nor
+    full, so the run looked empty and the node told the user to move it
+    behind a node that was never there."""
+    said = _cleanup_text(bundle, {_wrong_layout_reason(): 100})
+    assert [kind for kind, _ in said] == ['show']
+    text = said[0][1]
+    assert 'did not run' not in text
+    assert '100 attention calls ran at full cost' in text
+    assert 'resolution' in text
+
+
+def test_a_run_that_never_reached_veda_still_says_so(bundle):
+    said = _cleanup_text(bundle, {})
+    assert [kind for kind, _ in said] == ['warn']
+    assert said[0][1].startswith('Veda did not run')
+
+
+def test_the_text_refiner_alone_says_nothing(bundle):
+    assert _cleanup_text(bundle, {'other attention': 8}) == []

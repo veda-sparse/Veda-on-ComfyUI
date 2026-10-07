@@ -49,8 +49,16 @@
     节点上用 warning 说明接管了谁，verbose 再写稀疏层走的是哪个 forward。
   - 在 Veda 之后：object patch 是在 Veda 之后才加的，Veda 已无法改。每一步
     （`ON_PREPARE_STATE`）检查采样用的 patcher，发现就在节点上警告"把 Veda 移到它后面"。
-  - 兜底：一次采样结束、Veda 一个 H3 调用都没收到时，节点警告 "Veda did not run"。以后再出现
-    新的绕开方式，也不会再是静默。
+  - 兜底：一次采样结束、Veda **一个调用都没收到**（`run.calls` 为空）时，节点警告
+    "Veda did not run"。注意条件是"一个都没收到"，不是"一个都没加速"：两段式 / 分块采样器的
+    第二段会把上百个调用送进来又全被拒掉，那不是被别的节点替换了（见下）。
+- **被拒的调用要分清是不是 H3 自注意力**：override 装在 `transformer_options` 上，模型里所有
+  `optimized_attention` 都会经过它，包括 token refiner。`minimax_h3_layout` 在 H3 的 `forward`
+  里（model.py:624）就写进去了，而 refiner 在 719 行才跑，所以**refiner 也会看到一个 seq_len
+  对不上的 layout**。区分两者的是 `block_index`：只有 DiT 的 block 循环（755 行）会设它。
+  layout 对不上但带 `block_index` 的，记成 `_WRONG_LAYOUT`，计入摘要（这些调用确实跑了，而且
+  是全价）；其余记成 `other attention`，不计入——否则 refiner 会把"算了全注意力的百分之多少"
+  这个数字搅乱。
 - ComfyUI 自带的 "Model Sparse Attention" 在 H3 上用 block patch 直接替换注意力，Veda 的
   override 就不会被调用；节点检测到它时给出警告，而不是静默无效。
 - **不坏图**：稀疏路径里的任何异常（OOM、kernel 失败）都被捕获，提示后本次运行剩余部分走全注意力；

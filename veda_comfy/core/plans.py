@@ -112,6 +112,48 @@ def _aspect(grid) -> float:
     return grid[2] / grid[1]
 
 
+def padding_fraction(plan: TilePlan, grid) -> float:
+    """Share of the tiled slots that are padding on `grid`.
+
+    Every head group pads the grid up to its own tile shape, so the cost
+    is the mean over the shapes the plan actually uses.
+    """
+    real = grid[0] * grid[1] * grid[2]
+    if not real:
+        return 0.0
+    slots = [s.num_tiles(grid) * tiling.TILE_SIZE for s in plan.shapes]
+    return 1.0 - real / (sum(slots) / len(slots))
+
+
+def tiling_period(plan: TilePlan) -> tuple[int, int, int]:
+    """Token grid multiple that every shape of `plan` divides exactly."""
+    period = [1, 1, 1]
+    for shape in plan.shapes:
+        for axis, size in enumerate((shape.t, shape.h, shape.w)):
+            period[axis] = period[axis] * size // math.gcd(period[axis], size)
+    return tuple(period)
+
+
+def suggest_grid(plan: TilePlan, grid) -> tuple[int, int, int]:
+    """Nearest token grid at or above `grid` that `plan` tiles exactly."""
+    period = tiling_period(plan)
+    return tuple(-(-g // p) * p for g, p in zip(grid, period))
+
+
+def describe_request(grid) -> str:
+    """'1344x768, 124 frames (5.2 s)' for a token grid, as the H3 nodes
+    ask for it: pixels and a frame count, not latents."""
+    frames = frames_from_latent_t(grid[0])
+    return (f'{grid[2] * 32}x{grid[1] * 32}, {frames} frames '
+            f'({frames / FPS:.1f} s)')
+
+
+def describe_latent(grid) -> str:
+    """'latent 48x84 x 72, tokens 24x42 x 72' for a token grid."""
+    return (f'latent {grid[1] * 2}x{grid[2] * 2} x {grid[0]}, '
+            f'tokens {grid[1]}x{grid[2]} x {grid[0]}')
+
+
 class PlanTable:
     """All plans of a bundle; picks the plan for a target grid."""
 

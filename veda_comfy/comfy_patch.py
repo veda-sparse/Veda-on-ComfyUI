@@ -78,6 +78,12 @@ _DECLINED = (_NO_LAYOUT, _WRONG_LAYOUT, _MASKED, _ODD_SHAPES)
 _COMPOSES = '_uses_optimized_attention'
 TAKE_FORWARD = 'sol_take_forward'
 _ATTN_FORWARD = re.compile(r'diffusion_model\.blocks\.(\d+)\.attn\.forward')
+# How much more padding than the plan's own grid is worth a word. The
+# reference is not zero: a searched geometry pads too (16:9 t72 pads 11%,
+# because the shapes it mixes do not all divide 24x42), and telling
+# someone to leave the size the predictor was built for would be bad
+# advice. Only a video that wastes materially more than that gets a line.
+_PADDING_HINT = 0.03
 # Display names of known forward replacements, by function name.
 _KNOWN_FORWARDS = {
     'minimax_sageattn_forward':
@@ -381,6 +387,7 @@ class VedaPatch:
         self._announce(('plan', spec.target.grid),
                        self._running_text(engine, spec, choice),
                        warn=not choice.exact)
+        self._suggest_shape(spec.target.grid, choice)
         batch, heads, seq_len, dim = q.shape
         out = engine.attention(q[0].transpose(0, 1), k[0].transpose(0, 1),
                                v[0].transpose(0, 1), options['block_index'],
@@ -390,6 +397,37 @@ class VedaPatch:
         if skip_output_reshape:
             return out.transpose(0, 1).unsqueeze(0)
         return out.reshape(batch, seq_len, heads * dim)
+
+    def _suggest_shape(self, grid, choice) -> None:
+        """Says what to ask for when this video wastes tiles on padding.
+
+        A tile is computed whole, so padding is attention time spent on
+        rows that do not exist. The grid cannot be changed here - it
+        follows the width, height and length the H3 node was given - so
+        the node reports the nearest request that divides evenly.
+        """
+        padding = veda_plans.padding_fraction(choice.plan, grid)
+        baseline = veda_plans.padding_fraction(choice.plan, choice.plan.grid)
+        if padding <= baseline + _PADDING_HINT:
+            return
+        better = veda_plans.suggest_grid(choice.plan, grid)
+        if better == tuple(grid):
+            return
+        want = veda_plans.describe_request(better)
+        have = veda_plans.describe_request(grid)
+        self._announce(
+            ('padding', tuple(grid)),
+            f"{100 * padding:.0f}% of this video's tiles are padding, "
+            f'computed but empty, against {100 * baseline:.0f}% at the '
+            f'size this plan was built for. Ask for {want} '
+            f'({veda_plans.describe_latent(better)}) and this plan '
+            f'divides evenly; this run is {have} '
+            f'({veda_plans.describe_latent(grid)}).',
+            zh=f'这个视频有 {100 * padding:.0f}% 的 tile 是补齐出来的'
+               f'——照样要算，但里面没有内容（这套方案自己的尺寸是 '
+               f'{100 * baseline:.0f}%）。改成 {want}'
+               f'（{veda_plans.describe_latent(better)}）对这套方案正好整除；'
+               f'本次是 {have}（{veda_plans.describe_latent(grid)}）。')
 
     # -- node text ---------------------------------------------------------
 

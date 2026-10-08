@@ -133,3 +133,40 @@ def _rewrite_metadata(path, add, drop=()):
         metadata.pop(key, None)
     metadata.update(add)
     save_file(tensors, path, metadata=metadata)
+
+
+def _plan_16x9_t72():
+    return plans.TilePlan(
+        name='16x9_t72', grid=(72, 24, 42),
+        shapes=[tiling.TileShape(*s) for s in
+                ((8, 4, 4), (2, 8, 8), (4, 8, 4), (8, 8, 2))],
+        head_shape=[[0]])
+
+
+def test_tiling_period_is_the_lcm_of_every_shape_axis():
+    assert plans.tiling_period(_plan_16x9_t72()) == (8, 8, 8)
+
+
+def test_a_searched_geometry_still_pads():
+    """The bar for warning about padding cannot be zero: the shapes a
+    plan mixes do not all divide the grid it was searched on."""
+    plan = _plan_16x9_t72()
+    assert plans.padding_fraction(plan, plan.grid) > 0.0
+    assert plans.padding_fraction(plan, plan.grid) < 0.10
+
+
+@pytest.mark.parametrize('grid,request_text', [
+    ((72, 8, 14), '512x256, 243 frames (10.1 s)'),    # selflift stage 1
+    ((72, 15, 27), '1024x512, 243 frames (10.1 s)'),  # selflift stage 2
+])
+def test_suggest_grid_rounds_up_to_something_that_divides(grid, request_text):
+    plan = _plan_16x9_t72()
+    better = plans.suggest_grid(plan, grid)
+    assert plans.padding_fraction(plan, better) == pytest.approx(0.0)
+    assert plans.describe_request(better) == request_text
+    assert all(b >= g for b, g in zip(better, grid))
+
+
+def test_describe_latent_reports_the_grid_in_both_units():
+    assert plans.describe_latent((72, 24, 42)) == (
+        'latent 48x84 x 72, tokens 24x42 x 72')

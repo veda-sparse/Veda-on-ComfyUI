@@ -111,7 +111,11 @@ def build_graph(args, mode: str, prefix: str) -> dict:
         '8': {'class_type': 'RandomNoise',
               'inputs': {'noise_seed': args.seed}},
         '9': {'class_type': 'KSamplerSelect',
-              'inputs': {'sampler_name': 'res_multistep'}},
+              # selflift validates that it is plain Euler: it reuses the
+              # last low-resolution prediction across the transition, so
+              # a multistep sampler's history would not carry.
+              'inputs': {'sampler_name':
+                         'euler' if args.two_stage else 'res_multistep'}},
         '10': {'class_type': 'BasicScheduler',
                'inputs': {'model': ['2', 0], 'scheduler': 'simple',
                           'steps': args.steps, 'denoise': 1.0}},

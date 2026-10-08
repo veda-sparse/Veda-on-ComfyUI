@@ -188,6 +188,8 @@ class _Run:
         self.video = None             # e.g. '1344x768 · 5.2 s'
         self.failed = None            # error text if the sparse path failed
         self.prepared = False         # sampling started (ON_PREPARE_STATE)
+        self.spec = None              # layout of this run's target span
+        self.plan = None              # the plan chosen for it
         self.announced: set = set()
 
 
@@ -384,6 +386,7 @@ class VedaPatch:
             return dense('layout')
         choice = engine.plan_for(spec)
         self.run.video = veda_plans.describe_grid(spec.target.grid)
+        self.run.spec, self.run.plan = spec, choice.plan
         self._announce(('plan', spec.target.grid),
                        self._running_text(engine, spec, choice),
                        warn=not choice.exact)
@@ -489,8 +492,32 @@ class VedaPatch:
             lines += self._diagnostics(engines)
         return '\n'.join(lines)
 
+    def _geometry_lines(self) -> list[str]:
+        """What this run's sequence looked like, in the units the plan
+        and the H3 nodes use."""
+        run = self.run
+        if run.spec is None or run.plan is None:
+            return []
+        grid = run.spec.target.grid
+        padding = veda_plans.padding_fraction(run.plan, grid)
+        baseline = veda_plans.padding_fraction(run.plan, run.plan.grid)
+        lines = [f'Geometry: {veda_plans.describe_request(grid)} · '
+                 f'{veda_plans.describe_latent(grid)}',
+                 f'Plan: {run.plan.name} searched on '
+                 f'{veda_plans.describe_latent(run.plan.grid)} · padding '
+                 f'{100 * padding:.1f}% (that plan\'s own grid '
+                 f'{100 * baseline:.1f}%)']
+        spans = [f'target {grid[0]}x{grid[1]}x{grid[2]}']
+        spans += [f'{s.kind} {s.grid[0]}x{s.grid[1]}x{s.grid[2]}'
+                  for s in run.spec.references]
+        lines.append(f'Sequence: {run.spec.seq_len} tokens · '
+                     + ', '.join(spans))
+        return lines
+
     def _diagnostics(self, engines) -> list[str]:
         run, lines = self.run, ['-- diagnostics --']
+        lines += self._geometry_lines()
+        lines.append(f'Selection: {self.settings.describe()}')
         for key, timer in self._timers.items():
             phases = timer.summary()
             total = sum(phases.values()) / 1000.0
@@ -505,10 +532,20 @@ class VedaPatch:
                 for name, label in _TIMED_PHASES))
             self._timers[key] = self._engines[key].enable_timing()
         for engine in engines:
+            lines.append(f'Backend: {engine.backend.display} on '
+                         f'{engine.device}')
             kept = engine.stats.kept_fraction()
             if kept is not None:
                 lines.append(f'Video tiles kept: {100 * kept:.1f}% of '
                              'video x video tile pairs')
+            spread = engine.stats.per_row()
+            if spread is not None:
+                low, mean, high = spread
+                lines.append(f'Key tiles per query tile: {low} min · '
+                             f'{mean:.1f} mean · {high} max'
+                             + ('  (a wide spread at a small count is what '
+                                'flickers)' if high - low > max(2, mean / 4)
+                                else ''))
             chunking = engine.chunking
             if chunking.get('chunks_per_layer'):
                 free = chunking.get('free_bytes')

@@ -432,3 +432,32 @@ def test_a_run_that_never_reached_veda_still_says_so(bundle):
 
 def test_the_text_refiner_alone_says_nothing(bundle):
     assert _cleanup_text(bundle, {'other attention': 8}) == []
+
+
+def test_verbose_reports_the_geometry_plan_and_selection_spread(h3, bundle):
+    """What someone debugging a two-stage run needs: which geometry this
+    pass was, which plan it got and how much that pads, and how far the
+    kept-tile count swings between query tiles."""
+    patch = _patch(bundle, {'tiles': 3}, {'tiles': 3}, verbose=True)
+    said = []
+    patch.status.show = lambda t, *a, **k: said.append(t)
+    patch.status.warn = lambda t, *a, **k: said.append(t)
+    _forward(h3, 'r2va', patch)
+    patch.on_cleanup()
+    summary = said[-1]
+    assert '-- diagnostics --' in summary
+    for line in ('Geometry: 448x256', 'tokens 8x14 x 5',
+                 'Plan: 16x9_t5', 'padding ',
+                 'Sequence: ', 'ref_img ',
+                 'Selection: generated 3 tiles',
+                 'Backend: reference (fp32) on cpu',
+                 'Key tiles per query tile: '):
+        assert line in summary, f'missing {line!r}'
+    # Without verbose none of it appears.
+    quiet = _patch(bundle, {'tiles': 3}, {'tiles': 3})
+    said = []
+    quiet.status.show = lambda t, *a, **k: said.append(t)
+    quiet.status.warn = lambda t, *a, **k: said.append(t)
+    _forward(h3, 'r2va', quiet)
+    quiet.on_cleanup()
+    assert '-- diagnostics --' not in said[-1]

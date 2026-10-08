@@ -60,9 +60,24 @@ class Stats:
         self.video_pairs = 0
         self.work = None
         self.dense_work = 0.0
+        # Tiles kept per query row, accumulated on the device: the spread
+        # is what tells a stable selection from one that swings between
+        # neighbouring rows, which is what makes a video flicker.
+        self.row_min = None
+        self.row_max = None
+        self.row_sum = None
+        self.rows = 0
 
     def add(self, keep: torch.Tensor, layout: tiling.TileLayout) -> None:
         heads = keep.shape[0]
+        per_row = keep.sum(-1)
+        low, high, total = per_row.min(), per_row.max(), per_row.sum()
+        self.row_min = low if self.row_min is None else torch.minimum(
+            self.row_min, low)
+        self.row_max = high if self.row_max is None else torch.maximum(
+            self.row_max, high)
+        self.row_sum = total if self.row_sum is None else self.row_sum + total
+        self.rows += per_row.numel()
         kept = keep.sum()
         global_blocks = layout.n_global_tiles * (layout.n_tiles
                                                  + layout.n_video_tiles)
@@ -77,6 +92,13 @@ class Stats:
         if self.kept is None or not self.video_pairs:
             return None
         return float(self.kept) / self.video_pairs
+
+    def per_row(self) -> tuple[int, float, int] | None:
+        """(min, mean, max) key tiles kept per query row, or None."""
+        if self.row_sum is None or not self.rows:
+            return None
+        return (int(self.row_min), float(self.row_sum) / self.rows,
+                int(self.row_max))
 
     def compute_fraction(self) -> float | None:
         """Share of full-attention work done (all rows, all tokens)."""

@@ -96,7 +96,9 @@
 | `reference_sparsity` | reference = 条件视觉 token（FL2VA 关键帧 / AddGuide 引导帧 = `cond` 段，R2VA 参考图与参考视频 = `ref_img` 段），写法同上。`0%` 时参考段不 tile，作为 global 行双向全注意力。 |
 | `full_attention_layers` | 0 起的 DiT block 下标，这些层不做稀疏，跑完整注意力。 |
 | `full_attention_steps` | 0 起的采样步下标。第 i 步覆盖 `sample_sigmas[i] >= sigma > sample_sigmas[i+1]`，所以多阶段采样器的中间求值也算在第 i 步。 |
-| `verbose` | 运行结束后节点上额外显示诊断信息：Veda 注意力总耗时、每次模型调用的耗时、各阶段（gather / score / select / kernel / scatter）耗时（CUDA event 计时）、保留的 video tile 比例、调用次数与全注意力原因、打分器信息。 |
+| `selection` | `fixed` 固定保留上面那个数量；`adaptive` 用 Sol-Attn 的规则，按该行打分分布的 `tau` 个标准差定阈值，保留数随内容和尺寸变化。 |
+| `tau` | `adaptive` 的阈值，单位是标准差，默认 1.3（与 ComfyUI 的 Sol-Attn 一致）。 |
+| `verbose` | 运行结束后在节点和终端显示诊断：本次的几何（请求尺寸 / latent / token 网格）、选到的方案与补齐比例、序列长度与各 span、选块策略、后端与设备、保留的 video tile 比例、**每个 query tile 保留的 key tile 数的 min / mean / max**（摆动大且数量小正是闪烁的来源）、分块与工作集、各阶段耗时、调用次数与全注意力原因、打分器信息。 |
 
 尺寸没有完全匹配的训练方案时，固定使用纵横比最接近、其次时长最接近的方案（含 H/W 转置），节点上的
 「Tile plan」一行会写成 `nearest trained size: ...`，用措辞而不是图标说明这次不在训练分布内。

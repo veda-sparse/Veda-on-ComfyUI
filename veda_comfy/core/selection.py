@@ -199,22 +199,22 @@ def select_adaptive(scores: torch.Tensor, layout: tiling.TileLayout,
                              device=device)
         is_own[rows[own], col[own]] = True
         mask = mask | is_own[None]
+        # Rank once: kept columns first (ascending among themselves, so
+        # the kernels walk them in tile order as after select()'s topk),
+        # then the rest by score so the floor tops a thin row up with its
+        # next best tiles. Done unconditionally - asking whether any row
+        # is thin would read the device and stall the layer.
         floor = min(_ADAPTIVE_FLOOR, int(count))
-        if int(mask.sum(-1).amin()) < floor:
-            # Top up the thinnest rows with their next-best real tiles.
-            ranked = torch.where(live, s, torch.full_like(s, _NEG_INF))
-            ranked = ranked.scatter(-1, torch.argsort(
-                mask.to(torch.int8), dim=-1, descending=True,
-                stable=True)[..., :floor], _POS_INF)
-            mask = mask | (ranked == _POS_INF) & live
-        # Kept columns first, ascending among themselves, so the kernels
-        # walk them in tile order exactly as after select()'s topk.
-        order = torch.argsort(mask.to(torch.int8), dim=-1, descending=True,
-                              stable=True)
+        rank = torch.where(mask, s.new_full((), _POS_INF), s)
+        rank = torch.where(live, rank, s.new_full((), _NEG_INF))
+        order = torch.argsort(rank, dim=-1, descending=True, stable=True)
+        position = torch.arange(n_cols, device=device)
+        ranked_live = live.expand_as(order).gather(-1, order)
+        mask = mask.gather(-1, order) | ((position < floor) & ranked_live)
+        idx = order
         width = max(1, int(mask.sum(-1).amax().item()))
-        idx = order[..., :width]
-        indices.append(idx + block.start)
-        keeps.append(mask.gather(-1, idx))
+        indices.append(idx[..., :width] + block.start)
+        keeps.append(mask[..., :width])
     return torch.cat(indices, -1), torch.cat(keeps, -1)
 
 

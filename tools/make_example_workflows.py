@@ -31,6 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from veda_comfy import predictors  # noqa: E402
+from veda_comfy import settings as veda_settings  # noqa: E402
 
 OUT = os.path.join(ROOT, 'example_workflows')
 NODE_TYPE = 'VedaSparseAttention'
@@ -71,8 +72,10 @@ def _templates_dir(path: str | None) -> str:
     return os.path.join(spec.submodule_search_locations[0], 'templates')
 
 
-def _veda_node(node_id: int, pos, in_link: int, out_link: int) -> dict:
-    known = predictors.KNOWN_PREDICTORS[predictors.DEFAULT_PREDICTOR]
+def _veda_node(node_id: int, pos, in_link: int, out_link: int,
+               predictor: str | None = None) -> dict:
+    known = predictors.KNOWN_PREDICTORS[predictor
+                                        or predictors.DEFAULT_PREDICTOR]
     return {
         'id': node_id, 'type': NODE_TYPE, 'pos': list(pos),
         'size': [420, 110], 'flags': {}, 'order': 0, 'mode': 0,
@@ -98,7 +101,8 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int) -> dict:
         # reference_sparsity, full_attention_layers, full_attention_steps,
         # verbose. One value per widget -- a stale extra entry does not
         # error, it shifts every later widget by one.
-        'widgets_values': [known.filename, '90%', '90%', '', '', False],
+        'widgets_values': [known.filename, veda_settings.TRAINED,
+                           veda_settings.TRAINED, '', '', False],
     }
 
 
@@ -151,7 +155,8 @@ def _insert_dict_links(graph: dict, guider_type: str, new_id: int,
 
 
 def _insert_list_links(graph: dict, guider_type: str, new_id: int,
-                       link_id: int, pos) -> None:
+                       link_id: int, pos, predictor: str | None = None
+                       ) -> None:
     """Top-level format: links are [id, from, slot, to, slot, type]."""
     nodes = {n['id']: n for n in graph['nodes']}
     guider = next(n for n in graph['nodes'] if n['type'] == guider_type)
@@ -164,7 +169,8 @@ def _insert_list_links(graph: dict, guider_type: str, new_id: int,
     source['outputs'][old[2]]['links'].remove(old[0])
     source['outputs'][old[2]]['links'].append(link_id)
     old[1], old[2] = new_id, 0
-    graph['nodes'].append(_veda_node(new_id, pos, link_id, old[0]))
+    graph['nodes'].append(_veda_node(new_id, pos, link_id, old[0],
+                                     predictor))
 
 
 def make_t2va(template: dict) -> dict:
@@ -194,12 +200,17 @@ def make_t2va(template: dict) -> dict:
     return wf
 
 
+R2VA_PREDICTOR = 'minimax_h3_r2va_veda_preview_fp8.safetensors'
+
+
 def make_r2va(template: dict) -> dict:
     wf = copy.deepcopy(template)
     node_id, link_id = wf['last_node_id'] + 1, wf['last_link_id'] + 1
     top = min(g['bounding'][1] for g in wf['groups'])
     pos = (-770, top - 200)
-    _insert_list_links(wf, 'BasicGuider', node_id, link_id, pos)
+    # R2VA has its own predictor, trained on the reference task.
+    _insert_list_links(wf, 'BasicGuider', node_id, link_id, pos,
+                       predictor=R2VA_PREDICTOR)
     wf['groups'].append(_group(max(g.get('id', 0) for g in wf['groups']) + 1,
                                pos))
     _set_resolution(wf['nodes'])

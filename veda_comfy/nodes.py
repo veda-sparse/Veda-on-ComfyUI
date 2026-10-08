@@ -154,15 +154,19 @@ class VedaSparseAttention(io.ComfyNode):
                             'dialog fetches it, or put the file there by '
                             'hand.'),
                 io.String.Input(
-                    'generated_sparsity', default='90%', advanced=True,
+                    'generated_sparsity', default=veda_settings.TRAINED,
+                    advanced=True,
                     tooltip='Sparsity of the generated video\'s attention. '
+                            '"trained" uses the budget the chosen predictor '
+                            'was trained at (T2VA 90%, R2VA 32 tiles). '
                             '"90%" skips 90% of the key tiles each query '
-                            'tile could attend (the trained value; lower is '
-                            'closer to full attention and slower). A whole '
-                            'number such as "24" keeps exactly that many '
-                            'key tiles of 128 tokens instead.'),
+                            'tile could attend; lower is closer to full '
+                            'attention and slower. A whole number such as '
+                            '"24" keeps exactly that many key tiles of 128 '
+                            'tokens instead.'),
                 io.String.Input(
-                    'reference_sparsity', default='90%', advanced=True,
+                    'reference_sparsity', default=veda_settings.TRAINED,
+                    advanced=True,
                     tooltip='The same for the references: first / last '
                             'frames, guide frames, reference images and '
                             'videos. "0%" keeps full attention to and from '
@@ -188,8 +192,10 @@ class VedaSparseAttention(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, predictor, generated_sparsity='90%',
-                reference_sparsity='90%', full_attention_layers='',
+    def execute(cls, model, predictor,
+                generated_sparsity=veda_settings.TRAINED,
+                reference_sparsity=veda_settings.TRAINED,
+                full_attention_layers='',
                 full_attention_steps='', verbose=False) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
         node_id = getattr(hidden, 'unique_id', None)
@@ -203,10 +209,10 @@ class VedaSparseAttention(io.ComfyNode):
                 f'models/{FOLDER} 里只放 Veda 打分器文件。')) from error
         num_layers, _, _ = _check_model(model, bundle)
         settings = veda_settings.VedaSettings(
-            generated=veda_settings.parse_sparsity(generated_sparsity,
-                                                   'generated_sparsity'),
-            reference=veda_settings.parse_sparsity(reference_sparsity,
-                                                   'reference_sparsity'),
+            generated=veda_settings.parse_sparsity(
+                generated_sparsity, 'generated_sparsity', bundle.generated),
+            reference=veda_settings.parse_sparsity(
+                reference_sparsity, 'reference_sparsity', bundle.reference),
             dense_layers=veda_settings.parse_index_list(
                 full_attention_layers, 'full_attention_layers'),
             dense_steps=veda_settings.parse_index_list(

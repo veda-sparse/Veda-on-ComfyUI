@@ -74,10 +74,13 @@ reaches `models/veda` one of two ways:
 
 * **From a template.** Open one of the Veda templates and ComfyUI offers
   the predictor in its missing-models dialog; one click fetches it.
-* **By hand.** Download
-  `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors` from the
-  [predictor repository](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
-  into `ComfyUI/models/veda/` and restart ComfyUI.
+* **By hand.** Download the predictor for your task into
+  `ComfyUI/models/veda/` and restart ComfyUI:
+  [T2VA / FL2VA](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
+  (`minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`) or
+  [R2VA](https://huggingface.co/Veda-Sparse/Minimax-H3-R2VA-Veda-Preview)
+  (`minimax_h3_r2va_veda_preview_fp8.safetensors`), which is trained on
+  the reference task and used by the R2VA template.
 
 Any `.safetensors` in that folder appears in the `predictor` list, so a
 predictor trained elsewhere is selected the same way. If the selected
@@ -110,8 +113,8 @@ Only `model` and `predictor` are visible. The rest are advanced inputs
 
 | Input | Default | Description |
 |---|---|---|
-| `generated_sparsity` | `90%` | Sparsity of the generated video's attention. `90%` skips 90% of the key tiles each query tile could attend, which is the trained value; lower is closer to full attention and slower. A whole number such as `24` keeps exactly that many 128-token key tiles instead. |
-| `reference_sparsity` | `90%` | The same for references: first/last frames, guide frames, reference images and videos. `0%` gives them full attention. |
+| `generated_sparsity` | `trained` | Sparsity of the generated video's attention. `trained` uses the budget the selected predictor was trained at (T2VA 90%, R2VA 32 tiles) and the node reports which. `90%` skips 90% of the key tiles each query tile could attend; lower is closer to full attention and slower. A whole number such as `24` keeps exactly that many 128-token key tiles instead. |
+| `reference_sparsity` | `trained` | The same for references: first/last frames, guide frames, reference images and videos. `0%` gives them full attention. |
 | `full_attention_layers` | empty | 0-based DiT blocks that keep full attention, e.g. `0, 1, 47-49`. |
 | `full_attention_steps` | empty | 0-based sampling steps that keep full attention, e.g. `0`. |
 | `verbose` | off | Also report attention time per phase, call counts and predictor details on the node after each run. |

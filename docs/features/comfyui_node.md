@@ -92,7 +92,7 @@
 
 | 输入 | 语义 |
 |---|---|
-| `generated_sparsity` | generated = 正在生成的目标视频 token。一个输入框两种写法：`90%` 是稀疏比例（保留比例 = 1 - 90%，按等 kernel 代价计算，见 core_selection.md 规则 3）；整数如 `24` 是每个 query tile 固定保留的 key tile 数。 |
+| `generated_sparsity` | generated = 正在生成的目标视频 token。`trained` 取打分器自己声明的预算（见下），节点上会写明取到的是什么。一个输入框两种写法：`90%` 是稀疏比例（保留比例 = 1 - 90%，按等 kernel 代价计算，见 core_selection.md 规则 3）；整数如 `24` 是每个 query tile 固定保留的 key tile 数。 |
 | `reference_sparsity` | reference = 条件视觉 token（FL2VA 关键帧 / AddGuide 引导帧 = `cond` 段，R2VA 参考图与参考视频 = `ref_img` 段），写法同上。`0%` 时参考段不 tile，作为 global 行双向全注意力。 |
 | `full_attention_layers` | 0 起的 DiT block 下标，这些层不做稀疏，跑完整注意力。 |
 | `full_attention_steps` | 0 起的采样步下标。第 i 步覆盖 `sample_sigmas[i] >= sigma > sample_sigmas[i+1]`，所以多阶段采样器的中间求值也算在第 i 步。 |
@@ -105,6 +105,13 @@
 第一次稀疏调用时显示视频尺寸 / 时长和匹配的方案；运行结束显示"实际计算了全注意力的百分之多少"——按 128x128
 块计：保留的 video 块 + 永远全算的 global 行列，除以全注意力的 (S/128)² 块。不显示调用次数（那是 verbose
 的内容）。
+
+- **打分器自带训练预算，节点默认跟着它走**：T2VA 的 bundle 里是 `keep_ratio=0.1`（= 90% 稀疏），
+  R2VA 换成了一组新字段 `target_budget_kind/value` 与 `ref_budget_kind/value`（都是 `tiles` 32）。
+  `bundle._budget` 两种都认：没有新字段时退回 `keep_ratio`，两者都没有才报 incomplete metadata。
+  **旧的加载器硬要 `keep_ratio`，所以 R2VA 的 bundle 根本加载不了**（`BundleError: incomplete
+  metadata ('keep_ratio')`）。稀疏度输入的默认值因此改成 `trained`：用户不需要记住哪个打分器
+  训练在什么预算上，想覆盖照样可以写 `90%` 或 `24`。
 
 ## 代码位置与接口
 

@@ -59,9 +59,11 @@ KJNodes 的 "MiniMax H3 Low VRAM Attention" 照常生效。整个替换 H3 注�
 节点自己不下载任何东西。打分器（275 MB）进入 `models/veda` 有两种方式：
 
 * **用模板**：打开任一 Veda 模板，ComfyUI 会在缺失模型对话框里给出打分器，点一下就下好。
-* **手动放**：从[打分器仓库](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
-  下载 `minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`，放进
-  `ComfyUI/models/veda/`，重启 ComfyUI。
+* **手动放**：按任务下载打分器，放进 `ComfyUI/models/veda/` 后重启 ComfyUI：
+  [T2VA / FL2VA](https://huggingface.co/Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview)
+  （`minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors`）或
+  [R2VA](https://huggingface.co/Veda-Sparse/Minimax-H3-R2VA-Veda-Preview)
+  （`minimax_h3_r2va_veda_preview_fp8.safetensors`，在参考任务上训练，R2VA 模板用它）。
 
 该目录下任何 `.safetensors` 都会出现在 `predictor` 列表里，所以自己训练的打分器也是一样选。
 选中的文件不在时，节点会说明并打印下载地址，而不会自己去联网。
@@ -87,8 +89,8 @@ Attention computed: 10.9% of full attention (89.1% skipped)
 
 | 输入 | 默认 | 含义 |
 |---|---|---|
-| `generated_sparsity` | `90%` | 生成视频注意力的稀疏度。`90%` 表示跳过每个 query tile 可见的 90% key tile，这是训练值；调低更接近全注意力，也更慢。填整数如 `24` 则固定保留那么多个 128-token 的 key tile。 |
-| `reference_sparsity` | `90%` | 参考部分同上：首尾帧、引导帧、参考图和参考视频。`0%` 表示参考走全注意力。 |
+| `generated_sparsity` | `trained` | 生成视频注意力的稀疏度。`trained` 表示用所选打分器训练时的预算（T2VA 是 90%，R2VA 是 32 tiles），节点上会写明取到的是哪个。`90%` 表示跳过每个 query tile 可见的 90% key tile；调低更接近全注意力，也更慢。填整数如 `24` 则固定保留那么多个 128-token 的 key tile。 |
+| `reference_sparsity` | `trained` | 参考部分同上：首尾帧、引导帧、参考图和参考视频。`0%` 表示参考走全注意力。 |
 | `full_attention_layers` | 空 | 保持全注意力的 DiT block，0 起，例如 `0, 1, 47-49`。 |
 | `full_attention_steps` | 空 | 保持全注意力的采样步，0 起，例如 `0`。 |
 | `verbose` | 关 | 每次运行后在节点上额外显示各阶段注意力耗时、调用次数和打分器信息。 |

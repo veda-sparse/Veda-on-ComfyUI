@@ -48,13 +48,27 @@ def parse_index_list(text: str, what: str) -> frozenset[int]:
     return frozenset(indices)
 
 
-def parse_sparsity(text: str, what: str) -> selection.Budget:
+TRAINED = 'trained'
+
+
+def parse_sparsity(text: str, what: str,
+                   trained: selection.Budget | None = None
+                   ) -> selection.Budget:
     """'90%' -> skip 90% of the key tiles; '24' -> keep exactly 24 tiles.
+
+    Args:
+        text: What the user typed. 'trained' (the default) takes the
+            budget the chosen predictor declares, so nobody has to know
+            that T2VA was trained at 90% and R2VA at 32 tiles.
+        what: Input name, for the error message.
+        trained: The predictor's own budget, required for 'trained'.
 
     Raises:
         ValueError: On anything else, or a percentage outside [0, 100).
     """
     value = (text or '').strip()
+    if value.lower() == TRAINED and trained is not None:
+        return trained
     match = _PERCENT.match(value)
     if match is not None:
         percent = float(match.group(1))
@@ -69,10 +83,12 @@ def parse_sparsity(text: str, what: str) -> selection.Budget:
     if match is not None and int(match.group(1)) > 0:
         return selection.Budget(tiles=float(match.group(1)))
     raise ValueError(veda_status.bilingual(
-        f'{what}: cannot read {value!r}. Write a sparsity percentage such '
-        'as "90%" (skip 90% of the tiles), or a whole number such as "24" '
+        f'{what}: cannot read {value!r}. Write "trained" for the budget '
+        'this predictor was trained at, a sparsity percentage such as '
+        '"90%" (skip 90% of the tiles), or a whole number such as "24" '
         '(keep 24 tiles of 128 tokens per query tile).',
-        f'{what}：看不懂 {value!r}。请写稀疏比例如 "90%"（跳过 90% 的 tile），'
+        f'{what}：看不懂 {value!r}。可以写 "trained"（用该打分器训练时的'
+        '预算）、稀疏比例如 "90%"（跳过 90% 的 tile），'
         '或整数如 "24"（每个 query tile 保留 24 个 128-token 的 tile）。'))
 
 

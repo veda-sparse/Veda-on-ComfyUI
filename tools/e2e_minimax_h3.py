@@ -51,11 +51,19 @@ R2VA_PROMPT = (
 def _conditioning(args) -> dict:
     """Nodes '7' (positive, latent) and its inputs for the task."""
     if args.task == 't2va':
-        return {'7': {'class_type': 'MiniMaxH3ImageToVideo',
-                      'inputs': {'clip': ['4', 0], 'vae': ['5', 0],
-                                 'prompt': args.prompt,
-                                 'width': args.width, 'height': args.height,
-                                 'length': args.length}}}
+        inputs = {'clip': ['4', 0], 'vae': ['5', 0], 'prompt': args.prompt,
+                  'width': args.width, 'height': args.height,
+                  'length': args.length}
+        if not args.first_frame:
+            return {'7': {'class_type': 'MiniMaxH3ImageToVideo',
+                          'inputs': inputs}}
+        # A keyframe makes a 'cond' span, which Veda treats as a
+        # reference: the same path a ref image takes, on the FL2VA model.
+        inputs['first_frame'] = ['20', 0]
+        return {'20': {'class_type': 'LoadImage',
+                       'inputs': {'image': args.first_frame}},
+                '7': {'class_type': 'MiniMaxH3ImageToVideo',
+                      'inputs': inputs}}
     return {
         '20': {'class_type': 'LoadImage',
                'inputs': {'image': args.ref_image}},
@@ -240,6 +248,9 @@ def main() -> None:
     parser.add_argument('--prompt', default=None)
     parser.add_argument('--ref-image', default='example.png',
                         help='R2VA reference image in ComfyUI/input')
+    parser.add_argument('--first-frame', default=None,
+                        help='T2VA keyframe in ComfyUI/input; makes a '
+                             "'cond' reference span on the FL2VA model")
     parser.add_argument('--sparsity', default='32')
     parser.add_argument('--selection', default='fixed',
                         choices=('fixed', 'adaptive'))

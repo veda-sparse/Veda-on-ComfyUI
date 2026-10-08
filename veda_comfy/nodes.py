@@ -184,6 +184,28 @@ class VedaSparseAttention(io.ComfyNode):
                     'verbose', default=False, advanced=True,
                     tooltip='Also show timing and diagnostics on the node '
                             'after each run, and log every decision.'),
+                # Appended, never inserted: widget order is part of a
+                # saved workflow (AGENTS.md section 4).
+                io.Combo.Input(
+                    'selection', options=[veda_settings.FIXED,
+                                          veda_settings.ADAPTIVE],
+                    default=veda_settings.FIXED, advanced=True,
+                    tooltip='How each query tile picks its key tiles. '
+                            '"fixed" keeps the number above. "adaptive" '
+                            'decides per query tile from its own scores, '
+                            'keeping the tiles that score more than "tau" '
+                            'sigmas above that tile\'s mean, so the count '
+                            'follows the content and the video size '
+                            'instead of being set in advance.'),
+                io.Float.Input(
+                    'tau', default=veda_settings.DEFAULT_TAU,
+                    min=veda_settings.MIN_TAU, max=veda_settings.MAX_TAU,
+                    step=0.05, advanced=True,
+                    tooltip='Threshold in score-distribution sigmas when '
+                            'selection is "adaptive", as in ComfyUI\'s '
+                            'Sol-Attn. Higher is sparser: 1.0 keeps ~16% '
+                            'of key tiles, 1.5 ~7%, 2.0 ~2.7%. Ignored '
+                            'when selection is "fixed".'),
             ],
             outputs=[io.Model.Output(
                 display_name='model',
@@ -196,7 +218,9 @@ class VedaSparseAttention(io.ComfyNode):
                 generated_sparsity=veda_settings.DEFAULT_BUDGET,
                 reference_sparsity=veda_settings.DEFAULT_BUDGET,
                 full_attention_layers='',
-                full_attention_steps='', verbose=False) -> io.NodeOutput:
+                full_attention_steps='', verbose=False,
+                selection=veda_settings.FIXED,
+                tau=veda_settings.DEFAULT_TAU) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
         node_id = getattr(hidden, 'unique_id', None)
         status = veda_status.NodeStatus(node_id)
@@ -217,7 +241,8 @@ class VedaSparseAttention(io.ComfyNode):
                 full_attention_layers, 'full_attention_layers'),
             dense_steps=veda_settings.parse_index_list(
                 full_attention_steps, 'full_attention_steps'),
-            verbose=verbose)
+            verbose=verbose,
+            tau=veda_settings.parse_tau(selection, tau))
         missing = sorted(i for i in settings.dense_layers if i >= num_layers)
         if missing:
             missing = veda_settings.format_index_list(missing)

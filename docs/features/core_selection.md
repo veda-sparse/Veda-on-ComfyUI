@@ -32,6 +32,23 @@
 `veda_comfy/core/*`，不 import ComfyUI；`engine.VedaEngine.attention(q, k, v, layer, spec, plan)`，
 q/k/v 为 `[S, H, D]` 视图。
 
+## 选块策略：fixed 与 adaptive
+
+- **fixed（默认）**：每个 query tile 保留固定数量的 key tile，默认 **32 个**。以前默认是
+  等代价比例（90% 稀疏），但保留数会随网格面积一起缩放：双采工作流的第一段跑在训练网格的
+  0.33 倍上，90% 稀疏只剩 5.5 个 tile。5.5 不是整数，余数由 Bresenham 在行之间摊，而 tile
+  顺序里 t 块变化最快（`tiling.span_tiles` 的 `permute(2,4,0,1,3,5)`），**相邻行就是时间上
+  相邻的块**——于是每隔一个时间块上下文就多 20%，约 1.1 秒一个周期，看起来就是闪烁。
+  绝对数量不随网格变化，没有余数。
+- **adaptive**：抄 ComfyUI Sol-Attn 节点的规则和参数（`tau`，默认 1.3，范围 0–4，步进
+  0.05）。阈值取该行打分分布的 `tau` 个标准差，保留高过阈值的 tile，数量随内容和尺寸变化。
+  在高斯打分上实测与上游 tooltip 一致：tau 1.0 保留 16.0%、1.5 保留 6.8%、2.0 保留 2.4%
+  （上游写的是 ~16% / ~7% / ~2.7%）。
+  - 与 Sol-Attn 的两点不同，都是有意的：**不加它的三宽带**（`|i-j| <= 1`），只保留 Veda 自己
+    的规则 2 对角线，免得偏离打分器训练时的选择规则；**加一个下限 `_ADAPTIVE_FLOOR`**，因为
+    Sol-Attn 对没选中的块还有一个 pooled 项兜底，而 Veda 是直接跳过——打分平坦的行在纯阈值下
+    会只剩对角线。
+
 ## 测试
 
 `tests/unit/test_core_*.py`：tile 前缀性质与顺序、gather/scatter 逐位往返、global 行、预算公式、

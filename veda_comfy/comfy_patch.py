@@ -219,7 +219,8 @@ class VedaPatch:
             else:
                 engine = veda_engine.VedaEngine(
                     self.bundle, self.settings.generated,
-                    self.settings.reference, resolution.backend, device)
+                    self.settings.reference, resolution.backend, device,
+                    tau=self.settings.tau)
                 if self.settings.verbose:
                     timer = engine.enable_timing()
                     if timer is not None:
@@ -326,7 +327,8 @@ class VedaPatch:
             return 'full-attention layer'
         if s.dense_steps and self._step(options) in s.dense_steps:
             return 'full-attention step'
-        if s.generated.keeps_all and s.reference.keeps_all:
+        if (s.tau is None and s.generated.keeps_all
+                and s.reference.keeps_all):
             return 'sparsity 0%'
         if device is not None and self._engines.get(str(device), 0) is None:
             return 'no sparse kernel'

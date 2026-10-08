@@ -32,6 +32,11 @@ import torch
 from . import tiling
 
 _NEG_INF = float('-inf')
+# Fewest tiles an adaptive row keeps, whatever the threshold says. Veda
+# has no pooled term for the tiles it drops (see select_adaptive), so a
+# row with a flat score distribution must not fall back to its diagonal
+# alone.
+_ADAPTIVE_FLOOR = 8
 _POS_INF = float('inf')
 
 
@@ -126,6 +131,91 @@ def column_blocks(layout: tiling.TileLayout, generated: Budget,
         return [target]
     return [ColumnBlock(0, layout.n_ref_tiles, reference, layout.ref_tokens),
             target]
+
+
+@torch.no_grad()
+def select_adaptive(scores: torch.Tensor, layout: tiling.TileLayout,
+                    blocks: list[ColumnBlock], tau: float
+                    ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Keeps the key tiles scoring more than `tau` sigmas above their row's
+    mean (rules 2-7 otherwise unchanged).
+
+    Sol-Attn's rule and its parameter, on Veda's predicted block scores:
+    comfy_kitchen's eager reference thresholds a block at `tau` sigmas of
+    the proxy row's score distribution (`backends/eager/sol_attn.py`), so
+    the count follows the content rather than being fixed in advance.
+    That matters on the small grids two-stage workflows run: a fractional
+    fixed budget leaves a remainder that Bresenham alternates between
+    neighbouring tile rows, which are neighbours in time (see
+    settings.DEFAULT_BUDGET).
+
+    Sol-Attn also forces a three-wide band (`|i - j| <= 1`); Veda keeps
+    only its own rule 2 diagonal, so the selection rule stays the one the
+    predictor was trained against.
+
+    One difference matters: Sol-Attn covers every block it does not route
+    with a pooled term, so a row whose scores are flat can route almost
+    nothing and still see the whole sequence. Veda simply skips what it
+    does not keep, and a flat row has no tile more than tau sigmas above
+    its mean, so the threshold alone would leave such a row with just its
+    diagonal. `_ADAPTIVE_FLOOR` is the guard against that.
+
+    Args:
+        scores: [H', n_video, n_video] block scores.
+        layout: Tile layout.
+        blocks: Column blocks from column_blocks().
+        tau: Threshold in sigmas. Higher keeps fewer tiles.
+
+    Returns:
+        (index, keep) in the same layout as `select`, padded to the widest
+        row of this call.
+    """
+    heads, n_video = scores.shape[0], layout.n_video_tiles
+    device = scores.device
+    rows = torch.arange(n_video, device=device)
+    indices, keeps = [], []
+    for block in blocks:
+        n_cols = block.stop - block.start
+        valid = layout.kv_ok[block.start:block.stop]
+        if block.budget.keeps_all:
+            idx = torch.arange(block.start, block.stop, device=device)
+            indices.append(idx.expand(heads, n_video, n_cols))
+            keeps.append(valid.expand(heads, n_video, n_cols))
+            continue
+        s = scores[:, :, block.start:block.stop].float()
+        # Mean and sigma over the row's real columns only; empty tiles
+        # would otherwise drag the threshold down.
+        live = valid[None, None, :]
+        count = valid.sum().clamp(min=1)
+        centred = torch.where(live, s, torch.zeros_like(s))
+        mean = centred.sum(-1, keepdim=True) / count
+        centred = torch.where(live, s - mean, torch.zeros_like(s))
+        sigma = (centred.pow(2).sum(-1, keepdim=True) / count).sqrt()
+        mask = (centred > tau * sigma) & live
+        # Rule 2: a query tile always keeps its own key tile.
+        own = (rows >= block.start) & (rows < block.stop)
+        col = (rows - block.start).clamp(0, n_cols - 1)
+        is_own = torch.zeros(n_video, n_cols, dtype=torch.bool,
+                             device=device)
+        is_own[rows[own], col[own]] = True
+        mask = mask | is_own[None]
+        floor = min(_ADAPTIVE_FLOOR, int(count))
+        if int(mask.sum(-1).amin()) < floor:
+            # Top up the thinnest rows with their next-best real tiles.
+            ranked = torch.where(live, s, torch.full_like(s, _NEG_INF))
+            ranked = ranked.scatter(-1, torch.argsort(
+                mask.to(torch.int8), dim=-1, descending=True,
+                stable=True)[..., :floor], _POS_INF)
+            mask = mask | (ranked == _POS_INF) & live
+        # Kept columns first, ascending among themselves, so the kernels
+        # walk them in tile order exactly as after select()'s topk.
+        order = torch.argsort(mask.to(torch.int8), dim=-1, descending=True,
+                              stable=True)
+        width = max(1, int(mask.sum(-1).amax().item()))
+        idx = order[..., :width]
+        indices.append(idx + block.start)
+        keeps.append(mask.gather(-1, idx))
+    return torch.cat(indices, -1), torch.cat(keeps, -1)
 
 
 @torch.no_grad()

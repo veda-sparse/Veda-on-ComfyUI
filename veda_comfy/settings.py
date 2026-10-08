@@ -57,6 +57,10 @@ TRAINED = 'trained'
 # context swings 20% from one temporal block to the next and the video
 # flickers. An absolute count does not move with the grid.
 DEFAULT_BUDGET = '32'
+FIXED, ADAPTIVE = 'fixed', 'adaptive'
+# Sol-Attn's own default and range, from ComfyUI's "Model Sparse
+# Attention" node: a threshold in sigmas of the row's score distribution.
+DEFAULT_TAU, MIN_TAU, MAX_TAU = 1.3, 0.0, 4.0
 
 
 def parse_sparsity(text: str, what: str,
@@ -113,6 +117,27 @@ def format_index_list(indices: Sequence[int] | frozenset[int]) -> str:
     return ', '.join(parts)
 
 
+def parse_tau(strategy: str, tau: float) -> float | None:
+    """The adaptive threshold in sigmas, or None for the fixed budgets.
+
+    Raises:
+        ValueError: On an unknown strategy or a tau outside its range.
+    """
+    if strategy == FIXED:
+        return None
+    if strategy != ADAPTIVE:
+        raise ValueError(veda_status.bilingual(
+            f'selection: unknown strategy {strategy!r}; expected '
+            f'{FIXED!r} or {ADAPTIVE!r}.',
+            f'selection：未知的选块策略 {strategy!r}；应为 {FIXED!r} 或 '
+            f'{ADAPTIVE!r}。'))
+    if not MIN_TAU <= tau <= MAX_TAU:
+        raise ValueError(veda_status.bilingual(
+            f'tau: {tau} is outside [{MIN_TAU:g}, {MAX_TAU:g}].',
+            f'tau：{tau} 不在 [{MIN_TAU:g}, {MAX_TAU:g}] 范围内。'))
+    return float(tau)
+
+
 def format_budget(budget: selection.Budget) -> str:
     """'90%' or '24 tiles' (the way the user wrote it)."""
     if budget.tiles is not None:
@@ -132,6 +157,9 @@ class VedaSettings:
         dense_layers: 0-based DiT blocks that run full attention.
         dense_steps: 0-based sampling steps that run full attention.
         verbose: Show performance diagnostics and log every decision.
+        tau: None keeps the fixed budgets above; a value selects
+            adaptively instead, keeping the key tiles scoring more than
+            tau sigmas above their row's mean (Sol-Attn's rule).
     """
 
     generated: selection.Budget
@@ -139,8 +167,11 @@ class VedaSettings:
     dense_layers: frozenset[int] = frozenset()
     dense_steps: frozenset[int] = frozenset()
     verbose: bool = False
+    tau: float | None = None
 
     def describe(self) -> str:
+        if self.tau is not None:
+            return f'adaptive · tau {self.tau:g} sigma'
         return (f'generated {format_budget(self.generated)} · reference '
                 f'{format_budget(self.reference)}')
 

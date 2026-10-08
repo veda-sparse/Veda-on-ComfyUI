@@ -77,3 +77,84 @@ def test_kept_count_matches_fractional_budget():
     assert keep.sum(-1).float().mean().item() == pytest.approx(
         expected, abs=1.0 / n)
     assert math.floor(expected) <= keep.sum(-1).min()
+
+
+def test_adaptive_keeps_rule_2_and_only_real_tiles():
+    layout = _layout()
+    n_video = layout.n_video_tiles
+    torch.manual_seed(0)
+    scores = torch.randn(3, n_video, n_video)
+    budget = selection.Budget(tiles=1)
+    blocks = selection.column_blocks(layout, budget, budget)
+    index, keep = selection.select_adaptive(scores, layout, blocks, 1.3)
+    mask = selection.block_mask(index, keep, layout)
+    video = mask[:, :n_video, :n_video]
+    assert video.diagonal(dim1=1, dim2=2).all()         # rule 2
+    assert not (video & ~layout.kv_ok[:n_video]).any()  # never an empty tile
+    assert mask[:, n_video:, :].all()                   # global rows
+    assert mask[:, :, n_video:].all()                   # global columns
+
+
+def test_adaptive_matches_sol_attns_published_thresholds():
+    """tau is Sol-Attn's parameter, so on a Gaussian score row it has to
+    behave like the Gaussian tail its tooltip quotes: 1.0 keeps ~16% of
+    key tiles, 1.5 ~7%, 2.0 ~2.7%."""
+    spans = [tiling.TiledSpan(0, (72, 24, 42), tiling.TileShape(8, 4, 4))]
+    layout = tiling.build_tile_layout(spans, 72 * 24 * 42 + 10)
+    n_video = layout.n_video_tiles
+    budget = selection.Budget(tiles=32)
+    blocks = selection.column_blocks(layout, budget, budget)
+    torch.manual_seed(0)
+    scores = torch.randn(1, n_video, n_video)
+    for tau, want in ((1.0, 0.16), (1.5, 0.07), (2.0, 0.027)):
+        index, keep = selection.select_adaptive(scores, layout, blocks, tau)
+        mask = selection.block_mask(index, keep, layout)
+        share = mask[:, :n_video, :n_video].sum(-1).float().mean() / n_video
+        assert share == pytest.approx(want, abs=0.01)
+
+
+def test_adaptive_never_falls_back_to_the_diagonal_alone():
+    """Sol-Attn covers what it does not route with a pooled term; Veda
+    skips it. A row with no outlier must still keep a floor."""
+    spans = [tiling.TiledSpan(0, (16, 16, 16), tiling.TileShape(2, 8, 8))]
+    layout = tiling.build_tile_layout(spans, 16 ** 3 + 10)
+    n_video = layout.n_video_tiles
+    budget = selection.Budget(tiles=4)
+    blocks = selection.column_blocks(layout, budget, budget)
+    flat = torch.zeros(1, n_video, n_video)
+    index, keep = selection.select_adaptive(flat, layout, blocks, 1.3)
+    kept = selection.block_mask(index, keep, layout)[:, :n_video, :n_video]
+    assert (kept.sum(-1) == selection._ADAPTIVE_FLOOR).all()
+
+
+def test_adaptive_has_no_row_to_row_alternation():
+    """Identical rows keep identical counts: an adaptive threshold has no
+    remainder to spread between neighbouring rows."""
+    layout = _layout()
+    n_video = layout.n_video_tiles
+    scores = torch.randn(1, 1, n_video).expand(2, n_video, n_video)
+    blocks = selection.column_blocks(layout, selection.Budget(tiles=1),
+                                     selection.Budget(tiles=2.5))
+    index, keep = selection.select_adaptive(scores, layout, blocks, 1.3)
+    counts = selection.block_mask(index, keep, layout)[
+        :, :n_video, :n_video].sum(-1)
+    # They differ only by the forced diagonal, never by a spread remainder.
+    assert counts.max() - counts.min() <= 1
+
+
+def test_a_fractional_fixed_budget_alternates_between_neighbouring_rows():
+    """The flicker mechanism, at the two scales that matter. Tile rows are
+    ordered with the time block varying fastest (tiling.span_tiles), so
+    neighbouring rows are neighbours in time: on the small grid a
+    two-stage first pass runs at, every other temporal block gets 20%
+    more context than the one beside it."""
+    for per_row, n_tiles, swing in [(54.1, 594, 0.02),    # trained 1.00x
+                                    (5.5, 72, 0.20)]:     # two-stage 0.33x
+        lo, hi, frac = selection.split_budget(per_row, n_tiles)
+        extra = selection.bresenham_extra(n_tiles, frac, 'cpu')
+        counts = (lo + extra.to(torch.long))[:12]
+        assert hi - lo == 1
+        assert (hi - lo) / lo == pytest.approx(swing, abs=0.005)
+        # The small grid alternates every row; the trained one rarely.
+        flips = (counts[1:] != counts[:-1]).float().mean()
+        assert flips > 0.9 if per_row < 10 else flips < 0.3

@@ -76,7 +76,9 @@ def _chain_node(args, kind: str, model: list) -> dict:
                            'reference_sparsity': args.sparsity,
                            'full_attention_layers': '',
                            'full_attention_steps': '',
-                           'verbose': args.verbose}}
+                           'verbose': args.verbose,
+                           'selection': args.selection,
+                           'tau': args.tau}}
     if kind == 'lowvram':
         return {'class_type': 'MiniMaxLowVRAMAttention',
                 'inputs': {'model': model, 'head_chunks': args.head_chunks}}
@@ -234,7 +236,10 @@ def main() -> None:
     parser.add_argument('--prompt', default=None)
     parser.add_argument('--ref-image', default='example.png',
                         help='R2VA reference image in ComfyUI/input')
-    parser.add_argument('--sparsity', default='90%')
+    parser.add_argument('--sparsity', default='32')
+    parser.add_argument('--selection', default='fixed',
+                        choices=('fixed', 'adaptive'))
+    parser.add_argument('--tau', type=float, default=1.3)
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--head-chunks', type=int, default=4,
                         help='head_chunks of the lowvram node')

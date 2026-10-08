@@ -61,6 +61,8 @@ FIXED, ADAPTIVE = 'fixed', 'adaptive'
 # Sol-Attn's own default and range, from ComfyUI's "Model Sparse
 # Attention" node: a threshold in sigmas of the row's score distribution.
 DEFAULT_TAU, MIN_TAU, MAX_TAU = 1.3, 0.0, 4.0
+# References left untiled: global rows, attended both ways in full.
+KEEP_ALL = selection.Budget(ratio=1.0)
 
 
 def parse_sparsity(text: str, what: str,

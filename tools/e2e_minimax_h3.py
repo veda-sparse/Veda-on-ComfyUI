@@ -136,6 +136,29 @@ def build_graph(args, mode: str, prefix: str) -> dict:
         model = [node, 0]
     graph['11'] = {'class_type': 'BasicGuider',
                    'inputs': {'model': model, 'conditioning': ['7', 0]}}
+    if args.two_stage:
+        # selflift-Avatar replaces the sampler outright: it runs the
+        # schedule in two passes, lifting the latent in between, so the
+        # second pass is a different geometry on the same patched model.
+        graph['12'] = {
+            'class_type': 'SelfLiftAvatarH3Sampler',
+            'inputs': {
+                'low_res_model': model, 'high_res_model': model,
+                'positive': ['7', 0], 'negative': ['7', 0],
+                'vae': ['5', 0], 'latent_image': ['7', 1],
+                'sampler': ['9', 0], 'sigmas': ['10', 0],
+                'seed': args.seed, 'cfg': 1.0,
+                'transition_step': args.transition_step,
+                'lowres_scale': args.lowres_scale,
+                'rho': args.rho, 'w_min': 0.5, 'w_max': 1.0,
+                'upscaler_model': args.upscaler,
+                'highres_tiling': args.highres_tiling,
+                'tiling_mode': 'manual',
+                'tiling_tiles': args.tiling_tiles,
+                'tiling_axis': 'auto'}}
+        # It returns a LATENT directly, not (output, denoised_output).
+        graph['13']['inputs']['samples'] = ['12', 0]
+        graph['14']['inputs']['samples'] = ['12', 0]
     return graph
 
 
@@ -215,6 +238,17 @@ def main() -> None:
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--head-chunks', type=int, default=4,
                         help='head_chunks of the lowvram node')
+    parser.add_argument('--two-stage', action='store_true',
+                        help='sample with selflift-Avatar (low then high '
+                             'resolution) instead of SamplerCustomAdvanced')
+    parser.add_argument('--transition-step', type=int, default=6)
+    parser.add_argument('--lowres-scale', type=float, default=0.5)
+    parser.add_argument('--rho', type=float, default=0.6)
+    parser.add_argument('--upscaler', default='none')
+    parser.add_argument('--highres-tiling', action='store_true')
+    parser.add_argument('--tiling-tiles', type=int, default=4)
+    parser.add_argument('--samples', type=int, default=1,
+                        help='seeds to run per mode, starting at --seed')
     parser.add_argument('--unet', default=None)
     parser.add_argument('--lora', default=None)
     parser.add_argument(
@@ -237,12 +271,16 @@ def main() -> None:
         'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors' if r2va
         else 'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors')
     results = {}
+    base_seed = args.seed
     for mode in args.modes.split(','):
-        graph = build_graph(args, mode, f'veda_e2e/{args.task}_seed'
+      for sample in range(args.samples):
+        args.seed = base_seed + sample
+        stage = 'two_stage_' if args.two_stage else ''
+        graph = build_graph(args, mode, f'veda_e2e/{stage}{args.task}_seed'
                                         f'{args.seed}_{mode.replace("+", "_")}')
-        print(f'== {mode}: queued', flush=True)
+        print(f'== {mode} seed {args.seed}: queued', flush=True)
         report = asyncio.run(run(args.server, graph))
-        results[mode] = report
+        results[f'{mode}#{args.seed}'] = report
         for at, node, text in report['texts']:
             print(f'  [{at:7.1f}s] node {node}: {text}', flush=True)
         if report['error']:

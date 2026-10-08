@@ -46,6 +46,10 @@ class PredictorBundle:
             video, and `reference` the one for the reference spans. Older
             bundles state a single `keep_ratio` for both; newer ones state
             a kind and a value per stream (R2VA trains at 32 tiles).
+        tile_conditions: Whether the predictor was trained with the
+            reference spans cut into tiles. False means it only ever saw
+            them as global rows, so its scores for reference tiles mean
+            nothing and they have to stay in full attention.
         plans: Tile plans the predictor was trained against.
         proj_q: Per layer [H, 3D, D] bf16 host tensors.
         proj_k: Per layer [H, 3D, D] bf16 host tensors.
@@ -58,6 +62,7 @@ class PredictorBundle:
     head_dim: int
     generated: selection.Budget
     reference: selection.Budget
+    tile_conditions: bool
     plans: veda_plans.PlanTable
     proj_q: list[torch.Tensor]
     proj_k: list[torch.Tensor]
@@ -145,6 +150,11 @@ def load_bundle(path: str) -> PredictorBundle:
                    if keep is not None else None)
         generated = _budget(metadata, 'target', default)
         reference = _budget(metadata, 'ref', generated)
+        # Absent means no: bundles from before the R2VA release trained
+        # with the conditions global, and saying otherwise would let a
+        # predictor score tiles it has never seen.
+        tiled = metadata.get('tile_conditions', 'false').strip().lower()
+        tile_conditions = tiled in ('true', '1', 'yes')
         plan_json = json.loads(metadata['plans'])
     except (KeyError, ValueError) as error:
         raise BundleError(f'{os.path.basename(path)}: incomplete metadata '
@@ -185,5 +195,6 @@ def load_bundle(path: str) -> PredictorBundle:
     return PredictorBundle(path=path, num_layers=num_layers,
                            num_heads=num_heads, head_dim=head_dim,
                            generated=generated, reference=reference,
+                           tile_conditions=tile_conditions,
                            plans=table, proj_q=proj_q,
                            proj_k=proj_k, metadata=metadata)

@@ -66,6 +66,36 @@
   `CalledProcessError` 吞掉了（triton-windows 的 issue 83 / 156 / 186 是同一条）。对策：把
   对应版本 python.org 构建里的 `Include\` 和 `libs\` 复制进 `python_embeded\`，删掉
   `%USERPROFILE%\.triton\cache` 再重启。节点现在会这么说，而不是去怪显卡。
+- 2026-10-09，**RTX PRO 6000 Blackwell Server Edition 96 GB（SM120），Linux，
+  torch 2.14.1+cu130，triton 3.8.0，ComfyUI 0.38.2 + KJNodes + selflift-Avatar**：
+  双采（selflift-Avatar）与参考 tile 化两条路径的实测。
+
+  **双采跑通**（864x480 x 10.1 s，`transition_step=6`，`lowres_scale=0.5`）：两段都正确进入
+  Veda，几何与用户日志一致——第一段 `tokens 8x14 x 72`、第二段 `tokens 15x27 x 72`。
+
+  | 配置 | 每步 | 每行保留的 key tile |
+  |---|---|---|
+  | dense（selflift，无 Veda） | 3.5 s | - |
+  | Veda，ratio 90%（旧默认） | 3.6 s | 24…29 摆动 |
+  | Veda，fixed 32（新默认） | 3.6 s | **32 / 32 / 32 完全平坦** |
+  | Veda，adaptive tau 1.3 | 3.6 s | 随内容变化 |
+
+  **这个尺寸下 Veda 不快**：双采把第一段压到 8k token，32 个 tile 已经占掉 65% 的注意力。
+  Veda 的收益在全分辨率上——同一台机器 r2va 1344x768 x124 帧 20 步：dense 8.8 s/步、
+  Veda 5.0 s/步（**1.76x**）。
+
+  **闪烁：两个假设都没能复现。** 用 `tools/flicker_metric.py` 量 tile 周期（27.2 帧）上的
+  周期性能量，双采 10 个 seed：dense 0.1839、ratio 90% 0.1675（0.91x）、fixed 32 0.1368
+  （0.74x）、adaptive 0.1539（0.84x）。**旧配置并不比 dense 更闪**，所以"5/6 交替导致
+  周期性闪烁"这个推断**没有被实测支持**——机制存在（第一段确实是 5.5 tile/行），但没有变成
+  可测的闪烁。
+
+  **参考 tile 化：方向一致但不显著。** r2va 1344x768 x124、20 步、5 个 seed，按帧间差的
+  MAD z-score 看 latent 16 边界（输出 51–55 帧）：dense −0.26、参考被 tile 化 +0.70、
+  参考强制稠密 +0.21；整段最大 z 分别是 7.4 / 6.7 / 4.8。方向和"参考 tile 化抬高了 tile
+  边界处的跳变"一致，但幅度只有半个 MAD，n=5，**不足以下结论**。用户报的"固定第 51 帧"
+  没有复现——他用的是自定义 ref2va 融合权重和自定义 LoRA，我们用的是官方权重。
+
 - 2026-10-06，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，triton-windows
   3.8.0，SageAttention 2.2.0+cu130，ComfyUI 0.38.0 + KJNodes 1.5.2**：与其他注意力节点的
   交叉验证，以及显存开销的定位（`tools/e2e_minimax_h3.py`，T2VA FL2VA int8 + 8 步 Turbo

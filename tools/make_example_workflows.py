@@ -101,8 +101,8 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int,
         # reference_sparsity, full_attention_layers, full_attention_steps,
         # verbose. One value per widget -- a stale extra entry does not
         # error, it shifts every later widget by one.
-        'widgets_values': [known.filename, veda_settings.TRAINED,
-                           veda_settings.TRAINED, '', '', False],
+        'widgets_values': [known.filename, veda_settings.DEFAULT_BUDGET,
+                           veda_settings.DEFAULT_BUDGET, '', '', False],
     }
 
 

@@ -49,6 +49,14 @@ def parse_index_list(text: str, what: str) -> frozenset[int]:
 
 
 TRAINED = 'trained'
+# The default budget, in key tiles per query tile. An equal-cost ratio
+# scales the kept tiles with the grid area, so on the small grids the
+# two-stage workflows start from (a third of the trained grid) it
+# collapses to ~5 tiles a row and the Bresenham remainder then alternates
+# 5/6 between neighbouring tiles - which are neighbours in time, so the
+# context swings 20% from one temporal block to the next and the video
+# flickers. An absolute count does not move with the grid.
+DEFAULT_BUDGET = '32'
 
 
 def parse_sparsity(text: str, what: str,

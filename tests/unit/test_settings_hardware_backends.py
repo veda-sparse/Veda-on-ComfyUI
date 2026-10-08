@@ -183,3 +183,17 @@ def test_a_supported_gpu_whose_kernel_failed_is_not_blamed():
     english, chinese = comfy_patch._no_kernel_text(unsupported)
     assert 'has no sparse kernel' in english and 'SM80' in english
     assert '没有可用的稀疏 kernel' in chinese
+
+
+def test_the_default_budget_does_not_move_with_the_grid():
+    """A ratio budget keeps a share of the grid's area, so on the small
+    first pass of a two-stage workflow it collapses to a handful of tiles
+    and the Bresenham remainder alternates between neighbouring tiles -
+    which are neighbours in time. An absolute count does not."""
+    import math
+    budget = settings.parse_sparsity(settings.DEFAULT_BUDGET, 'generated')
+    assert budget.tiles == 32
+    trained, small = (72, 24, 42), (72, 8, 14)   # 1.00x and 0.33x
+    for grid in (trained, small):
+        tiles = math.prod(-(-g // s) for g, s in zip(grid, (8, 4, 4)))
+        assert budget.per_row(math.prod(grid), tiles) == 32

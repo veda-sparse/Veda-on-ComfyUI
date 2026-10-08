@@ -154,19 +154,19 @@ class VedaSparseAttention(io.ComfyNode):
                             'dialog fetches it, or put the file there by '
                             'hand.'),
                 io.String.Input(
-                    'generated_sparsity', default=veda_settings.TRAINED,
-                    advanced=True,
-                    tooltip='Sparsity of the generated video\'s attention. '
-                            '"trained" uses the budget the chosen predictor '
-                            'was trained at (T2VA 90%, R2VA 32 tiles). '
-                            '"90%" skips 90% of the key tiles each query '
-                            'tile could attend; lower is closer to full '
-                            'attention and slower. A whole number such as '
-                            '"24" keeps exactly that many key tiles of 128 '
-                            'tokens instead.'),
+                    'generated_sparsity',
+                    default=veda_settings.DEFAULT_BUDGET, advanced=True,
+                    tooltip='Key tiles of 128 tokens each query tile keeps. '
+                            'A whole number such as "32" (the default) '
+                            'keeps that many whatever the video size, which '
+                            'is what two-stage workflows need: a percentage '
+                            'scales with the grid area and collapses on '
+                            'their small first pass. "90%" still works and '
+                            'skips 90% of the tiles; "trained" takes '
+                            'whatever the predictor declares.'),
                 io.String.Input(
-                    'reference_sparsity', default=veda_settings.TRAINED,
-                    advanced=True,
+                    'reference_sparsity',
+                    default=veda_settings.DEFAULT_BUDGET, advanced=True,
                     tooltip='The same for the references: first / last '
                             'frames, guide frames, reference images and '
                             'videos. "0%" keeps full attention to and from '
@@ -193,8 +193,8 @@ class VedaSparseAttention(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, predictor,
-                generated_sparsity=veda_settings.TRAINED,
-                reference_sparsity=veda_settings.TRAINED,
+                generated_sparsity=veda_settings.DEFAULT_BUDGET,
+                reference_sparsity=veda_settings.DEFAULT_BUDGET,
                 full_attention_layers='',
                 full_attention_steps='', verbose=False) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)

@@ -47,6 +47,31 @@ def frame_differences(path: str, max_side: int = 160) -> np.ndarray:
     return np.asarray(diffs, dtype=np.float64)
 
 
+def blocked_differences(path: str, blocks: int = 8) -> np.ndarray:
+    """[frames - 1, blocks, blocks] mean absolute luma difference per
+    spatial block.
+
+    The whole-frame mean hides a local jump: a 128-token tile covers a
+    small patch of a 1344x768 frame, so an artifact confined to it moves
+    the frame average by almost nothing. Splitting the frame first keeps
+    a local event visible.
+    """
+    previous, rows = None, []
+    with av.open(path) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = 'AUTO'
+        for frame in container.decode(stream):
+            image = frame.to_ndarray(format='gray').astype(np.float32)
+            h, w = image.shape
+            tile = image[:h // blocks * blocks, :w // blocks * blocks]
+            tile = tile.reshape(blocks, h // blocks, blocks, w // blocks)
+            tile = tile.mean(axis=(1, 3))
+            if previous is not None:
+                rows.append(np.abs(tile - previous))
+            previous = tile
+    return np.asarray(rows, dtype=np.float64)
+
+
 def spectrum(diffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """(periods in frames, amplitude) of the detrended difference signal.
 

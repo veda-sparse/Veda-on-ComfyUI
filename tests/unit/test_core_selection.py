@@ -158,3 +158,55 @@ def test_a_fractional_fixed_budget_alternates_between_neighbouring_rows():
         # The small grid alternates every row; the trained one rarely.
         flips = (counts[1:] != counts[:-1]).float().mean()
         assert flips > 0.9 if per_row < 10 else flips < 0.3
+
+
+def test_a_pooled_term_rescues_a_budget_too_small_to_attend():
+    """Sol-Attn covers what it does not route with one term per block, so
+    the softmax still sees the whole sequence. Veda skips outright, which
+    is what makes a tight budget - the two-stage first pass, where 32
+    tiles is most of the grid - fall apart. Random scores exaggerate the
+    gap (a trained predictor picks better tiles), but the direction is
+    the point."""
+    from veda_comfy.core import reference
+    torch.manual_seed(0)
+    spans = [tiling.TiledSpan(0, (16, 16, 16), tiling.TileShape(2, 8, 8))]
+    layout = tiling.build_tile_layout(spans, 16 ** 3)
+    n_video, slots = layout.n_video_tiles, layout.num_slots
+    q, k, v = (torch.randn(slots, 2, 128) * 0.5 for _ in range(3))
+    full = reference.dense_attention(q, k, v)
+    real = layout.slot_valid.bool()
+
+    def error(out):
+        return ((out[real] - full[real]).pow(2).sum()
+                / full[real].pow(2).sum()).sqrt().item()
+
+    previous = None
+    for tiles in (1, 4, 16):
+        budget = selection.Budget(tiles=tiles)
+        blocks = selection.column_blocks(layout, budget, budget)
+        index, keep = selection.select(
+            torch.randn(2, n_video, n_video), layout, blocks)
+        mask = selection.block_mask(index, keep, layout)
+        strict = error(reference.block_sparse_attention(q, k, v, mask, layout))
+        pooled = error(
+            reference.pooled_correction_attention(q, k, v, mask, layout))
+        assert pooled < strict / 4, (tiles, strict, pooled)
+        # The pooled result also degrades gracefully as the budget shrinks.
+        if previous is not None:
+            assert pooled <= previous + 0.05
+        previous = pooled
+
+
+def test_the_pooled_term_is_exact_when_nothing_is_skipped():
+    from veda_comfy.core import reference
+    torch.manual_seed(1)
+    spans = [tiling.TiledSpan(0, (4, 8, 8), tiling.TileShape(2, 8, 8))]
+    layout = tiling.build_tile_layout(spans, 4 * 8 * 8)
+    slots = layout.num_slots
+    q, k, v = (torch.randn(slots, 2, 128) * 0.5 for _ in range(3))
+    everything = torch.ones(2, layout.n_tiles, layout.n_tiles,
+                            dtype=torch.bool)
+    strict = reference.block_sparse_attention(q, k, v, everything, layout)
+    pooled = reference.pooled_correction_attention(q, k, v, everything,
+                                                   layout)
+    torch.testing.assert_close(pooled, strict, rtol=1e-4, atol=1e-4)

@@ -49,6 +49,31 @@ q/k/v 为 `[S, H, D]` 视图。
     Sol-Attn 对没选中的块还有一个 pooled 项兜底，而 Veda 是直接跳过——打分平坦的行在纯阈值下
     会只剩对角线。
 
+## Sol 的池化误差修正（参考实现）
+
+`reference.pooled_correction_attention`：每个被跳过的 tile 仍然贡献一项，用它的 `mean(K)` 和
+`sum(V)` 构成，于是 softmax 的分母仍然看得到整条序列。算法取自 Sol-Attn
+（arXiv 2607.24027，以及 comfy_kitchen 的 `sol_attn`）：**用未归一化的 exp，池化项在分母里按
+它代表的真实行数加权**（`v_sum` 已经是该 tile 的和，所以分子不用再乘）。
+
+目前只有 fp32 参考实现，用来回答"值不值得写进 kernel"。随机打分下的相对 L2（32 个 tile）：
+
+| 每行预算 | 直接跳过 | 加池化项 | 降低 |
+|---|---|---|---|
+| 1 | 5.647 | 0.246 | 95.6% |
+| 4 | 2.689 | 0.234 | 91.3% |
+| 16 | 1.000 | 0.178 | 82.2% |
+
+**预算越紧收益越大**，而双采第一段正是预算最紧的地方。注意随机打分会夸大差距（训练好的打分器
+选得准得多），但方向明确。
+
+代价（每个 query tile 一行，预算 32）：池化项随 tile 总数走、exact 路径随预算走，所以
+训练尺寸（594 tile）+14.5%，而双采第一段（72 tile）只有 **+1.8%**。K 的 tile 均值打分器本来
+就要算（`predictor.pool_video_tiles` 的 mean），新增的只有每个 tile 的 `sum(V)`。
+
+有了它之后 `_ADAPTIVE_FLOOR` 就不需要了：打分平坦的行由池化项兜底，和 Sol-Attn 一样，
+adaptive 退化成纯 tau 阈值、与 budget 完全无关。**kernel 实现与这一步都还没做。**
+
 ## 测试
 
 `tests/unit/test_core_*.py`：tile 前缀性质与顺序、gather/scatter 逐位往返、global 行、预算公式、

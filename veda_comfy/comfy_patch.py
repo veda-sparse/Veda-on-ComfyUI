@@ -228,7 +228,7 @@ class VedaPatch:
                 engine = veda_engine.VedaEngine(
                     self.bundle, self.settings.generated,
                     self.settings.reference, resolution.backend, device,
-                    tau=self.settings.tau)
+                    tau=self.settings.tau, pooled=self.settings.pooled)
                 if self.settings.verbose:
                     timer = engine.enable_timing()
                     if timer is not None:

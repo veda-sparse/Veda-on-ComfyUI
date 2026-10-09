@@ -48,11 +48,14 @@ class TritonInt8Backend(base.Backend):
     def __init__(self, label: str):
         self.display = f'Triton INT8 ({label})'
 
-    def attend(self, q, k, v, block_mask, layout):
+    supports_pooled = True
+
+    def attend(self, q, k, v, block_mask, layout, pooled=False):
         index, count = selection.tile_index_list(block_mask & layout.kv_ok)
         with torch.no_grad():
-            return _kernel().attend(q, k, v, index, count,
-                                    layout.valid_count)
+            return _kernel().attend(
+                q, k, v, index, count, layout.valid_count,
+                pooled_mask=block_mask if pooled else None)
 
     def warmup_note(self) -> str:
         return 'compiling Triton kernels for this GPU (first run only)'

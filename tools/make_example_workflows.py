@@ -99,12 +99,12 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int,
         },
         # Positional, in schema order: predictor, generated_sparsity,
         # reference_sparsity, full_attention_layers, full_attention_steps,
-        # verbose, selection, tau. One value per widget -- a stale
+        # verbose, selection, tau, error_correction. One per widget -- a stale
         # extra entry does not error, it shifts every later widget by one.
         'widgets_values': [known.filename, veda_settings.DEFAULT_BUDGET,
                            veda_settings.DEFAULT_BUDGET, '', '', False,
                            veda_settings.FIXED,
-                           veda_settings.DEFAULT_TAU],
+                           veda_settings.DEFAULT_TAU, False],
     }
 
 

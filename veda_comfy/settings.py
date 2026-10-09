@@ -162,6 +162,10 @@ class VedaSettings:
         tau: None keeps the fixed budgets above; a value selects
             adaptively instead, keeping the key tiles scoring more than
             tau sigmas above their row's mean (Sol-Attn's rule).
+        pooled: Give every skipped tile one pooled term instead of
+            dropping it (Sol-Attn's correction), where the backend has
+            it. Costs kernel time at a fixed budget and buys far more
+            back at a smaller one - see docs/features/int8_kernel.md.
     """
 
     generated: selection.Budget
@@ -170,12 +174,15 @@ class VedaSettings:
     dense_steps: frozenset[int] = frozenset()
     verbose: bool = False
     tau: float | None = None
+    pooled: bool = False
 
     def describe(self) -> str:
         if self.tau is not None:
-            return f'adaptive · tau {self.tau:g} sigma'
-        return (f'generated {format_budget(self.generated)} · reference '
-                f'{format_budget(self.reference)}')
+            text = f'adaptive · tau {self.tau:g} sigma'
+        else:
+            text = (f'generated {format_budget(self.generated)} · reference '
+                    f'{format_budget(self.reference)}')
+        return text + (' · pooled correction' if self.pooled else '')
 
     def describe_full_attention(self) -> str | None:
         parts = []

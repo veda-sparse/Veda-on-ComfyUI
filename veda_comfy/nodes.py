@@ -207,6 +207,15 @@ class VedaSparseAttention(io.ComfyNode):
                             'Sol-Attn. Higher is sparser: 1.0 keeps ~16% '
                             'of key tiles, 1.5 ~7%, 2.0 ~2.7%. Ignored '
                             'when selection is "fixed".'),
+                io.Boolean.Input(
+                    'error_correction', default=False, advanced=True,
+                    tooltip='Give every skipped tile one pooled term so '
+                            'the softmax still sees the whole sequence '
+                            '(Sol-Attn\'s correction), instead of dropping '
+                            'it. At the same key-tile count it costs '
+                            'kernel time; at a smaller one it is both '
+                            'faster and more accurate than keeping more '
+                            'tiles. NVIDIA only.'),
             ],
             outputs=[io.Model.Output(
                 display_name='model',
@@ -221,7 +230,8 @@ class VedaSparseAttention(io.ComfyNode):
                 full_attention_layers='',
                 full_attention_steps='', verbose=False,
                 selection=veda_settings.FIXED,
-                tau=veda_settings.DEFAULT_TAU) -> io.NodeOutput:
+                tau=veda_settings.DEFAULT_TAU,
+                error_correction=False) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
         node_id = getattr(hidden, 'unique_id', None)
         status = veda_status.NodeStatus(node_id)
@@ -243,7 +253,8 @@ class VedaSparseAttention(io.ComfyNode):
             dense_steps=veda_settings.parse_index_list(
                 full_attention_steps, 'full_attention_steps'),
             verbose=verbose,
-            tau=veda_settings.parse_tau(selection, tau))
+            tau=veda_settings.parse_tau(selection, tau),
+            pooled=bool(error_correction))
         if not bundle.tile_conditions and not settings.reference.keeps_all:
             # The predictor only ever scored the references as global
             # rows, so its scores for reference tiles are meaningless and

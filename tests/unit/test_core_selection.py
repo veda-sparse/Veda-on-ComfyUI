@@ -210,3 +210,21 @@ def test_the_pooled_term_is_exact_when_nothing_is_skipped():
     pooled = reference.pooled_correction_attention(q, k, v, everything,
                                                    layout)
     torch.testing.assert_close(pooled, strict, rtol=1e-4, atol=1e-4)
+
+
+def test_the_adaptive_floor_is_the_pooled_term_standing_in():
+    """With Sol-Attn's correction the skipped tiles still reach the
+    softmax, so a flat row no longer needs topping up - which is the
+    only reason the floor exists."""
+    spans = [tiling.TiledSpan(0, (16, 16, 16), tiling.TileShape(2, 8, 8))]
+    layout = tiling.build_tile_layout(spans, 16 ** 3 + 10)
+    n_video = layout.n_video_tiles
+    budget = selection.Budget(tiles=4)
+    blocks = selection.column_blocks(layout, budget, budget)
+    flat = torch.zeros(1, n_video, n_video)
+    for floor, want in ((True, selection._ADAPTIVE_FLOOR), (False, 1)):
+        index, keep = selection.select_adaptive(flat, layout, blocks, 1.3,
+                                                floor=floor)
+        kept = selection.block_mask(index, keep,
+                                    layout)[:, :n_video, :n_video]
+        assert (kept.sum(-1) == want).all(), (floor, kept.sum(-1))

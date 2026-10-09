@@ -135,7 +135,8 @@ def column_blocks(layout: tiling.TileLayout, generated: Budget,
 
 @torch.no_grad()
 def select_adaptive(scores: torch.Tensor, layout: tiling.TileLayout,
-                    blocks: list[ColumnBlock], tau: float
+                    blocks: list[ColumnBlock], tau: float,
+                    floor: bool = True
                     ) -> tuple[torch.Tensor, torch.Tensor]:
     """Keeps the key tiles scoring more than `tau` sigmas above their row's
     mean (rules 2-7 otherwise unchanged).
@@ -165,6 +166,9 @@ def select_adaptive(scores: torch.Tensor, layout: tiling.TileLayout,
         layout: Tile layout.
         blocks: Column blocks from column_blocks().
         tau: Threshold in sigmas. Higher keeps fewer tiles.
+        floor: Keep `_ADAPTIVE_FLOOR` tiles even where the threshold
+            keeps fewer. Pass False when the backend adds Sol-Attn's
+            pooled term, which is what the floor stands in for.
 
     Returns:
         (index, keep) in the same layout as `select`, padded to the widest
@@ -204,13 +208,13 @@ def select_adaptive(scores: torch.Tensor, layout: tiling.TileLayout,
         # then the rest by score so the floor tops a thin row up with its
         # next best tiles. Done unconditionally - asking whether any row
         # is thin would read the device and stall the layer.
-        floor = min(_ADAPTIVE_FLOOR, int(count))
+        least = min(_ADAPTIVE_FLOOR, int(count)) if floor else 1
         rank = torch.where(mask, s.new_full((), _POS_INF), s)
         rank = torch.where(live, rank, s.new_full((), _NEG_INF))
         order = torch.argsort(rank, dim=-1, descending=True, stable=True)
         position = torch.arange(n_cols, device=device)
         ranked_live = live.expand_as(order).gather(-1, order)
-        mask = mask.gather(-1, order) | ((position < floor) & ranked_live)
+        mask = mask.gather(-1, order) | ((position < least) & ranked_live)
         idx = order
         width = max(1, int(mask.sum(-1).amax().item()))
         indices.append(idx[..., :width] + block.start)

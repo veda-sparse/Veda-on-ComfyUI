@@ -150,16 +150,13 @@ class VedaEngine:
     def __init__(self, bundle: veda_bundle.PredictorBundle,
                  generated: selection.Budget, reference: selection.Budget,
                  backend, device: torch.device,
-                 tau: float | None = None, pooled: bool = False):
+                 tau: float | None = None):
         self.bundle = bundle
         self.generated = generated
         self.reference = reference
         # None keeps the fixed budgets above; a value selects adaptively
         # at that many sigmas instead (Sol-Attn's rule).
         self.tau = tau
-        # Sol-Attn's correction, if the backend has it: skipped tiles
-        # still reach the softmax, so a tight budget stops collapsing.
-        self.pooled = pooled and getattr(backend, 'supports_pooled', False)
         self.backend = backend
         self.device = device
         self.stats = Stats()
@@ -317,18 +314,14 @@ class VedaEngine:
                         index, keep = selection.select(scores, layout, blocks)
                     else:
                         index, keep = selection.select_adaptive(
-                            scores, layout, blocks, self.tau,
-                            floor=not self.pooled)
+                            scores, layout, blocks, self.tau)
                     del scores
                     self.stats.add(keep, layout)
                     mask = selection.block_mask(index, keep, layout)
                 with timer('gather'):
                     v_t = tiling.gather_tiles(v, layout, heads_chunk)
                 with timer('attend'):
-                    o_t = (self.backend.attend(q_t, k_t, v_t, mask, layout,
-                                               pooled=True) if self.pooled
-                           else self.backend.attend(q_t, k_t, v_t, mask,
-                                                    layout))
+                    o_t = self.backend.attend(q_t, k_t, v_t, mask, layout)
                 if measuring:
                     self.chunking['workspace_bytes'] = max(
                         self.chunking.get('workspace_bytes', 0),

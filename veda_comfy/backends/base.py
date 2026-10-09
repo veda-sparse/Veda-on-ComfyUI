@@ -67,10 +67,6 @@ class Backend(abc.ABC):
             [N, H', D] in q's dtype. Rows of padding slots are unspecified.
         """
 
-    # Whether `attend` accepts `pooled`: Sol-Attn's correction, one term
-    # per skipped tile so the softmax still sees the whole sequence.
-    supports_pooled = False
-
     def warmup_note(self) -> str | None:
         """What the first call does that takes a while, if anything."""
         return None

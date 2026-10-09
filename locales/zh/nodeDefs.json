@@ -38,10 +38,6 @@
       "tau": {
         "name": "tau",
         "tooltip": "selection 为 \"adaptive\" 时的阈值，单位是该行打分分布的标准差，与 ComfyUI 的 Sol-Attn 一致。越大越稀疏：1.0 约保留 16% 的 key tile，1.5 约 7%，2.0 约 2.7%。selection 为 \"fixed\" 时忽略。"
-      },
-      "error_correction": {
-        "name": "error_correction",
-        "tooltip": "给每个被跳过的 tile 补一个池化项，让 softmax 仍然看得到整条序列（Sol-Attn 的误差修正），而不是直接丢掉。保留数不变时它要花 kernel 时间；配合更小的保留数则又快又准。仅 NVIDIA。"
       }
     },
     "outputs": {

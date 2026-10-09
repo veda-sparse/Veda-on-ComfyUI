@@ -10,7 +10,6 @@ silent fallback.
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import threading
 
@@ -219,22 +218,6 @@ class VedaSparseAttention(io.ComfyNode):
             dense_steps=veda_settings.parse_index_list(
                 full_attention_steps, 'full_attention_steps'),
             verbose=verbose)
-        if not bundle.tile_conditions and not settings.reference.keeps_all:
-            # The predictor only ever scored the references as global
-            # rows, so its scores for reference tiles are meaningless and
-            # the selection drops them at a tile boundary - a visible jump
-            # at a fixed frame, whatever the seed or the sampler.
-            settings = dataclasses.replace(
-                settings, reference=veda_settings.KEEP_ALL)
-            status.warn(
-                'This predictor was trained with the references in full '
-                'attention, so reference_sparsity is ignored and they stay '
-                'dense. Tiling them would score tiles it has never seen, '
-                'which shows up as a jump at one fixed frame.',
-                zh='这个打分器训练时参考部分走的是全注意力，所以 '
-                   'reference_sparsity 被忽略，参考保持稠密。强行给它们分 '
-                   'tile 等于让打分器给没见过的 tile 打分，表现是固定某一帧'
-                   '上的跳变。')
         missing = sorted(i for i in settings.dense_layers if i >= num_layers)
         if missing:
             missing = veda_settings.format_index_list(missing)

@@ -32,6 +32,27 @@
 `veda_comfy/core/*`，不 import ComfyUI；`engine.VedaEngine.attention(q, k, v, layer, spec, plan)`，
 q/k/v 为 `[S, H, D]` 视图。
 
+## 参考段照常 tile 化（一条被推翻的改动）
+
+有一版改成「bundle 没写 `tile_conditions` 就强制参考走全注意力」，理由是 T2VA 打分器没
+训练过 tile 化的参考、给它打分属于分布外。**这个推理是错的，已经回滚。**
+
+错在两处：
+
+1. **打分器打的是 tile 的内容**（池化后的 q/k 过每头的投影），而参考图 tile 和视频 tile
+   是同一个 VAE、同一个 RoPE 空间里的视觉 latent，是同一类东西。投影迁移得过去，没有
+   「没见过所以打分无意义」这回事。
+2. **T2VA 的训练里根本没有视觉参考**（`task: text-to-audio-video`）。所以
+   `tile_conditions` 缺失**不等于**「训练时参考是 global 行」，只是这个问题没出现过。
+   我把一个字段的缺席读成了一个正面论断。
+
+而且仓库里早就验过相反的做法：hardware.md 记着 T2VA 打分器 + R2VA 工作流、**参考段按 tile
+稀疏**跑通（"Attention computed: 16.4%"）。那是既有且验证过的行为，被我按一个自己编的
+推断改掉了。
+
+教训：**字段缺席不是证据**。要断言训练时怎么处理的，得去看训练配置，不能从 bundle 里
+少了一个键反推。
+
 ## 预算：固定 tile 数，不用比例
 
 每个 query tile 保留固定数量的 key tile，默认 **32 个**。以前是等代价比例（90% 稀疏），

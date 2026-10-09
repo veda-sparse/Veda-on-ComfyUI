@@ -57,8 +57,6 @@ TRAINED = 'trained'
 # context swings 20% from one temporal block to the next and the video
 # flickers. An absolute count does not move with the grid.
 DEFAULT_BUDGET = '32'
-# References left untiled: global rows, attended both ways in full.
-KEEP_ALL = selection.Budget(ratio=1.0)
 
 
 def parse_sparsity(text: str, what: str,

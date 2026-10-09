@@ -121,16 +121,6 @@
   增量**（`_PADDING_HINT`，3 个百分点），超了才提示，并给出按 `tiling_period`（各形状每条轴的
   最小公倍数）向上对齐后的请求尺寸——像素 + 帧数 + 秒数，以及对应的 latent / token 网格。
 
-- **打分器没训练过 tile 化的参考，就不能给参考分 tile**：T2VA 的 bundle 里没有
-  `tile_conditions`（= 训练时参考是 global 行、双向全注意力），R2VA 写了 `tile_conditions=true`
-  和 `ref_budget 32 tiles`。而节点以前对两者一视同仁，默认把参考也按 `reference_sparsity`
-  切块——**对 T2VA 来说这是分布外**：打分器从没给参考 tile 打过分，分数没有意义，选择会在某个
-  tile 边界上把参考整段丢掉。用户在 ref2va 工作流上报的"固定第 51 帧跳变、换 seed / LoRA /
-  步数 / 分辨率都不动、旁路 Veda 就好"正是这个：1344x768 x 124 帧 → token 网格 (37,24,42)，
-  `8x4x4` 的时间边界在 latent 8/16/24，latent 16 对应的正是输出第 51–55 帧。
-  对策：`bundle.tile_conditions` 为假时强制参考走全注意力，并在节点上说明忽略了
-  `reference_sparsity`。
-
 ## 代码位置与接口
 
 - `veda_comfy/nodes.py`：schema、校验（模型类型、层数 / 头数与打分器一致、下标范围）、

@@ -366,11 +366,13 @@ def _pooled_epilogue(q, q_scale, head, query_tile, Kp, Kp_scale, Vp,
         exact = tl.load(mask_row + tiles, mask=live, other=1)
         skipped = live & (counts > 0) & (exact == 0)
 
-        kp = tl.load(Kp + (head * n_tiles + tiles)[:, None] * D
-                     + offs_d[None, :], mask=skipped[:, None], other=0)
+        # Kp is [H, D, n_tiles]: the load already has the orientation the
+        # dot wants, so the loop carries no transpose of an int8 tile.
+        kp = tl.load(Kp + head * D * n_tiles + offs_d[:, None] * n_tiles
+                     + tiles[None, :], mask=skipped[None, :], other=0)
         scales = tl.load(Kp_scale + head * n_tiles + tiles, mask=skipped,
                          other=0.0)
-        qk = tl.dot(q, tl.trans(kp)).to(tl.float32) * q_scale
+        qk = tl.dot(q, kp).to(tl.float32) * q_scale
         qk = qk * scales[None, :]
         qk = tl.where(skipped[None, :], qk, -float('inf'))
 
@@ -425,10 +427,13 @@ def pooled_summaries(k: torch.Tensor, v: torch.Tensor,
     counts = valid_count.clamp(min=1).to(torch.float32)[:, None, None]
     k_mean = (k.view(tiles, TILE, heads, dim).float() * live).sum(1) / counts
     v_sum = (v.view(tiles, TILE, heads, dim).float() * live).sum(1)
-    k_mean = k_mean.permute(1, 0, 2).contiguous()          # [H, tiles, D]
+    k_mean = k_mean.permute(1, 0, 2)                       # [H, tiles, D]
     scale = k_mean.abs().amax(-1).clamp(min=1e-12) / 127.0
     k_int8 = (k_mean / scale[..., None]).round().to(torch.int8)
-    return k_int8, scale, v_sum.permute(1, 0, 2).contiguous().half()
+    # [H, D, tiles]: the kernel's dot wants D first (see _pooled_epilogue).
+    k_int8 = k_int8.permute(0, 2, 1).contiguous()
+    v_sum = v_sum.permute(1, 0, 2).contiguous().half()
+    return k_int8, scale.contiguous(), v_sum
 
 
 def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,

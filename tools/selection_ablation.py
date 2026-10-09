@@ -36,7 +36,19 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from veda_comfy.core import reference, selection  # noqa: E402
+from veda_comfy.core import reference, selection, tiling  # noqa: E402
+
+
+def _layout(capture):
+    """Rebuilds the tile layout a capture describes.
+
+    Captures store spans rather than the TileLayout itself: that class
+    is imported under ComfyUI's custom-node module path, so a pickle of
+    it cannot be opened anywhere else.
+    """
+    spans = [tiling.TiledSpan(start, tuple(grid), tiling.TileShape(*shape))
+             for start, grid, shape in capture['spans']]
+    return tiling.build_tile_layout(spans, capture['seq_len'])
 
 
 def _dense(q, k, v, layout):
@@ -88,7 +100,7 @@ def kept_per_row(mask, layout) -> float:
 def evaluate(capture, densities, taus):
     """One capture -> {rule: (mean kept per row, [H] error)}."""
     q, k, v = capture['q'], capture['k'], capture['v']
-    layout = capture['layout']
+    layout = _layout(capture)
     scores = capture['scores']
     want = _dense(q, k, v, layout)
     n = layout.n_video_tiles

@@ -89,7 +89,7 @@ def _block_sparse(q, k, v, block_mask, layout, tiles_at_once: int = 16):
         last = min(first + tiles_at_once, n_tiles)
         start, stop = first * tile, last * tile
         keep = block_mask[:, first:last].repeat_interleave(tile, 1)
-        keep = keep & valid[None, None, :]
+        keep = keep.repeat_interleave(tile, 2) & valid[None, None, :]
         scores = torch.einsum('qhd,khd->hqk', q[start:stop].float(), kf)
         scores = (scores * scale).masked_fill(~keep, float('-inf'))
         probability = torch.softmax(scores, dim=-1).nan_to_num(0.0)

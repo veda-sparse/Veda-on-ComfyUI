@@ -86,7 +86,8 @@ def _chain_node(args, kind: str, model: list) -> dict:
                            'full_attention_steps': '',
                            'verbose': args.verbose,
                            'selection': args.selection,
-                           'tau': args.tau}}
+                           'tau': args.tau,
+                           'error_correction': args.error_correction}}
     if kind == 'lowvram':
         return {'class_type': 'MiniMaxLowVRAMAttention',
                 'inputs': {'model': model, 'head_chunks': args.head_chunks}}
@@ -261,6 +262,8 @@ def main() -> None:
                         help='T2VA keyframe in ComfyUI/input; makes a '
                              "'cond' reference span on the FL2VA model")
     parser.add_argument('--sparsity', default='32')
+    parser.add_argument('--error-correction', action='store_true',
+                        help="Sol-Attn's pooled term for skipped tiles")
     parser.add_argument('--scheduler', default='simple')
     parser.add_argument('--sampler-name', default=None)
     parser.add_argument('--sigma-shift', default=None,

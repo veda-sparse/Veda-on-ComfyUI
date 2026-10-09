@@ -29,10 +29,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import os
+import sys
 
 import torch
 
-from veda_comfy.core import reference, selection
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from veda_comfy.core import reference, selection  # noqa: E402
 
 
 def _dense(q, k, v, layout):

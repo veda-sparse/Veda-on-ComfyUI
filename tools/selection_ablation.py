@@ -109,8 +109,8 @@ def evaluate(capture, densities, taus):
         tiles = max(1, round(n * percent / 100.0))
         budget = selection.Budget(tiles=tiles)
         for name, mask in (
-                (f'top-k {percent}%', rule_topk(scores, layout, budget)),
-                (f'top-k+logB {percent}%',
+                (f'top-k {percent:g}%', rule_topk(scores, layout, budget)),
+                (f'top-k+logB {percent:g}%',
                  rule_topk_log_rows(scores, layout, budget))):
             got = reference.block_sparse_attention(q, k, v, mask, layout)
             out[name] = (kept_per_row(mask, layout),

@@ -483,9 +483,9 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
             q_int8, k_int8, v16, q_scale, k_scale, blocks, block_count,
             valid, out, kp, kp_scale, vp, valid_count.to(torch.int32),
             mask, q.stride(0), q.stride(1), v16.stride(0), v16.stride(1),
-            *common, mask.stride(0), mask.stride(1), slots // TILE,
-            n_tiles, BLK_T=min(64, triton.next_power_of_2(n_tiles)),
-            **options)
+            *common, mask.stride(0), mask.stride(1),
+            n_tiles=n_tiles,
+            BLK_T=min(64, triton.next_power_of_2(n_tiles)), **options)
         return out
     if use_tma:
         _install_allocator()

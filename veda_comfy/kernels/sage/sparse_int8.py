@@ -187,6 +187,60 @@ def _attention_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid, Out,
 
 
 @triton.jit
+def _attention_pooled_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
+                             Out, Kp, Kp_scale, Vp, Counts, Mask,
+                             stride_n, stride_h, stride_vn, stride_vh,
+                             stride_qs, stride_ks, stride_ih, stride_iq,
+                             stride_mh, stride_mq, n_q_tiles, n_tiles,
+                             D: tl.constexpr, BLK: tl.constexpr,
+                             BLOCK_M: tl.constexpr, BLK_T: tl.constexpr):
+    """_attention_kernel plus Sol-Attn's pooled term for skipped tiles."""
+    query_tile = tl.program_id(0)
+    head = tl.program_id(1)
+    offs_m = query_tile * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLK)
+    offs_d = tl.arange(0, D)
+
+    q = tl.load(Q + head * stride_h + offs_m[:, None] * stride_n
+                + offs_d[None, :])
+    q_scale = tl.load(Q_scale + head * stride_qs + query_tile)
+
+    m_i = tl.full([BLOCK_M], -1e30, dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, D], dtype=tl.float32)
+
+    count = tl.load(Count + head * n_q_tiles + query_tile)
+    index_row = Index + head * stride_ih + query_tile * stride_iq
+    for i in range(0, count):
+        block = tl.load(index_row + i)
+        start = block * BLK
+        k = tl.load(K + head * stride_h + (start + offs_n)[None, :] * stride_n
+                    + offs_d[:, None])
+        k_scale = tl.load(K_scale + head * stride_ks + block)
+        qk = tl.dot(q, k).to(tl.float32) * q_scale * k_scale
+        qk = tl.where(offs_n[None, :] < tl.load(Valid + block), qk,
+                      -float('inf'))
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        p = tl.math.exp2(qk - m_ij[:, None])
+        alpha = tl.math.exp2(m_i - m_ij)
+        l_i = l_i * alpha + tl.sum(p, 1)
+        acc = acc * alpha[:, None]
+        v = tl.load(V + head * stride_vh + (start + offs_n)[:, None] * stride_vn
+                    + offs_d[None, :])
+        acc += tl.dot(p.to(tl.float16), v, out_dtype=tl.float16)
+        m_i = m_ij
+
+    m_i, l_i, acc = _pooled_epilogue(
+        q, q_scale, head, query_tile, Kp, Kp_scale, Vp, Counts, Mask,
+        m_i, l_i, acc, n_tiles, stride_mh, stride_mq, D, BLK_T)
+
+    l_i = tl.where(l_i > 0.0, l_i, 1.0)
+    acc = acc / l_i[:, None]
+    tl.store(Out + head * stride_h + offs_m[:, None] * stride_n
+             + offs_d[None, :], acc.to(Out.type.element_ty))
+
+
+@triton.jit
 def _attention_tma_kernel(Q, K, V, Q_scale, K_scale, Index, Count, Valid,
                           Out, slots, stride_n, stride_h, stride_kd,
                           stride_kh, stride_vn, stride_vh, stride_qs,
@@ -290,6 +344,50 @@ def _install_allocator() -> None:
 
 
 
+@triton.jit
+def _pooled_epilogue(q, q_scale, head, query_tile, Kp, Kp_scale, Vp,
+                     Counts, Mask, m_i, l_i, acc, n_tiles,
+                     stride_mh, stride_mq, D: tl.constexpr,
+                     BLK_T: tl.constexpr):
+    """Folds Sol-Attn's pooled term for the skipped tiles into a running
+    online softmax.
+
+    One term per tile this query tile did not select, scored against the
+    tile's mean key and carrying the tile's summed value. The term stands
+    for `Counts` real rows, so the denominator takes it that many times
+    while the numerator takes it once - `Vp` is already a sum.
+    """
+    offs_d = tl.arange(0, D)
+    mask_row = Mask + head * stride_mh + query_tile * stride_mq
+    for start in range(0, n_tiles, BLK_T):
+        tiles = start + tl.arange(0, BLK_T)
+        live = tiles < n_tiles
+        counts = tl.load(Counts + tiles, mask=live, other=0)
+        exact = tl.load(mask_row + tiles, mask=live, other=1)
+        skipped = live & (counts > 0) & (exact == 0)
+
+        kp = tl.load(Kp + (head * n_tiles + tiles)[:, None] * D
+                     + offs_d[None, :], mask=skipped[:, None], other=0)
+        scales = tl.load(Kp_scale + head * n_tiles + tiles, mask=skipped,
+                         other=0.0)
+        qk = tl.dot(q, tl.trans(kp)).to(tl.float32) * q_scale
+        qk = qk * scales[None, :]
+        qk = tl.where(skipped[None, :], qk, -float('inf'))
+
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        p = tl.math.exp2(qk - m_ij[:, None])
+        alpha = tl.math.exp2(m_i - m_ij)
+        # The denominator counts the rows a pooled term stands for.
+        l_i = l_i * alpha + tl.sum(p * counts[None, :].to(tl.float32), 1)
+        acc = acc * alpha[:, None]
+        vp = tl.load(Vp + (head * n_tiles + tiles)[:, None] * D
+                     + offs_d[None, :], mask=skipped[:, None], other=0)
+        acc += tl.dot(p.to(tl.float16), vp.to(tl.float16),
+                      out_dtype=tl.float16)
+        m_i = m_ij
+    return m_i, l_i, acc
+
+
 def key_blocks(index: torch.Tensor, count: torch.Tensor,
                valid_count: torch.Tensor, block: int = KEY_BLOCK):
     """Kept tiles -> kept key blocks, which is what the kernel walks.
@@ -307,10 +405,37 @@ def key_blocks(index: torch.Tensor, count: torch.Tensor,
             valid.flatten().to(torch.int32).contiguous())
 
 
+def pooled_summaries(k: torch.Tensor, v: torch.Tensor,
+                     valid_count: torch.Tensor):
+    """Per-tile mean key and summed value, for the pooled correction.
+
+    Args:
+        k, v: [N, H, D] tile-ordered, N a multiple of TILE.
+        valid_count: [n_tiles] int32 real rows per tile (a prefix).
+
+    Returns:
+        (k_int8 [H, n_tiles, D], k_scale [H, n_tiles], v_sum [H, n_tiles, D]
+        fp16). The key means go through the same int8 path as the exact
+        keys so the kernel can use one dot for both.
+    """
+    slots, heads, dim = k.shape
+    tiles = slots // TILE
+    live = (torch.arange(TILE, device=k.device)[None, :]
+            < valid_count[:, None])[..., None, None]
+    counts = valid_count.clamp(min=1).to(torch.float32)[:, None, None]
+    k_mean = (k.view(tiles, TILE, heads, dim).float() * live).sum(1) / counts
+    v_sum = (v.view(tiles, TILE, heads, dim).float() * live).sum(1)
+    k_mean = k_mean.permute(1, 0, 2).contiguous()          # [H, tiles, D]
+    scale = k_mean.abs().amax(-1).clamp(min=1e-12) / 127.0
+    k_int8 = (k_mean / scale[..., None]).round().to(torch.int8)
+    return k_int8, scale, v_sum.permute(1, 0, 2).contiguous().half()
+
+
 def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
            index: torch.Tensor, count: torch.Tensor,
            valid_count: torch.Tensor,
-           softmax_scale: float | None = None) -> torch.Tensor:
+           softmax_scale: float | None = None,
+           pooled_mask: torch.Tensor | None = None) -> torch.Tensor:
     """Block-sparse INT8 attention on tile-ordered tensors.
 
     Args:
@@ -320,6 +445,9 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
         count: [H, N // TILE] int32 how many of `index` are real.
         valid_count: [n_tiles] int32 real rows per tile (a prefix).
         softmax_scale: defaults to D ** -0.5.
+        pooled_mask: [H, n_tiles, n_tiles] bool, True where a tile is
+            attended exactly. Given, every other tile contributes one
+            pooled term (Sol-Attn's correction) instead of being dropped.
 
     Returns:
         [N, H, D] in q's dtype.
@@ -345,6 +473,20 @@ def attend(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     common = (q_scale.stride(0), k_scale.stride(0), blocks.stride(0),
               blocks.stride(1))
     grid = (slots // TILE, heads)
+    if pooled_mask is not None:
+        if use_tma:
+            raise ValueError('the pooled correction has no TMA path')
+        kp, kp_scale, vp = pooled_summaries(k, v, valid_count)
+        n_tiles = slots // TILE
+        mask = pooled_mask.to(torch.int8).contiguous()
+        _attention_pooled_kernel[grid](
+            q_int8, k_int8, v16, q_scale, k_scale, blocks, block_count,
+            valid, out, kp, kp_scale, vp, valid_count.to(torch.int32),
+            mask, q.stride(0), q.stride(1), v16.stride(0), v16.stride(1),
+            *common, mask.stride(0), mask.stride(1), slots // TILE,
+            n_tiles, BLK_T=min(64, triton.next_power_of_2(n_tiles)),
+            **options)
+        return out
     if use_tma:
         _install_allocator()
         _attention_tma_kernel[grid](

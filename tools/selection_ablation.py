@@ -36,7 +36,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from veda_comfy.core import reference, selection, tiling  # noqa: E402
+from veda_comfy.core import selection, tiling  # noqa: E402
 
 
 def _layout(capture, device):
@@ -68,6 +68,33 @@ def _dense(q, k, v, layout, chunk: int = 2048):
         out[start:start + chunk] = torch.einsum('hqk,khd->qhd', probability,
                                                 vf)
         del scores, probability
+    return out * layout.slot_valid.to(out.dtype)[:, None, None]
+
+
+def _block_sparse(q, k, v, block_mask, layout, tiles_at_once: int = 16):
+    """reference.block_sparse_attention, a few query tiles at a time.
+
+    The reference materialises the whole N^2 score matrix, which it says
+    plainly is for self-tests and never a real sequence - three copies
+    of 33 GB does not fit even on a 96 GB card. Chunking by whole tiles
+    keeps the mask slicing trivial.
+    """
+    tile = tiling.TILE_SIZE
+    scale = q.shape[-1] ** -0.5
+    valid = layout.slot_valid.bool()
+    out = torch.empty_like(q, dtype=torch.float32)
+    kf, vf = k.float(), v.float()
+    n_tiles = q.shape[0] // tile
+    for first in range(0, n_tiles, tiles_at_once):
+        last = min(first + tiles_at_once, n_tiles)
+        start, stop = first * tile, last * tile
+        keep = block_mask[:, first:last].repeat_interleave(tile, 1)
+        keep = keep & valid[None, None, :]
+        scores = torch.einsum('qhd,khd->hqk', q[start:stop].float(), kf)
+        scores = (scores * scale).masked_fill(~keep, float('-inf'))
+        probability = torch.softmax(scores, dim=-1).nan_to_num(0.0)
+        out[start:stop] = torch.einsum('hqk,khd->qhd', probability, vf)
+        del scores, probability, keep
     return out * layout.slot_valid.to(out.dtype)[:, None, None]
 
 
@@ -127,13 +154,13 @@ def evaluate(capture, densities, taus):
                 (f'top-k {percent:g}%', rule_topk(scores, layout, budget)),
                 (f'top-k+logB {percent:g}%',
                  rule_topk_log_rows(scores, layout, budget))):
-            got = reference.block_sparse_attention(q, k, v, mask, layout)
+            got = _block_sparse(q, k, v, mask, layout)
             out[name] = (kept_per_row(mask, layout),
                          _error(got, want, layout))
     for tau in taus:
         budget = selection.Budget(tiles=max(1, n // 10))
         mask = rule_adaptive(scores, layout, budget, tau)
-        got = reference.block_sparse_attention(q, k, v, mask, layout)
+        got = _block_sparse(q, k, v, mask, layout)
         out[f'adaptive tau {tau:g}'] = (kept_per_row(mask, layout),
                                         _error(got, want, layout))
     return out

@@ -51,8 +51,23 @@ def _layout(capture):
     return tiling.build_tile_layout(spans, capture['seq_len'])
 
 
-def _dense(q, k, v, layout):
-    out = reference.dense_attention(q.float(), k.float(), v.float())
+def _dense(q, k, v, layout, chunk: int = 2048):
+    """Dense attention over the real geometries, in query chunks.
+
+    The whole score matrix is N^2 per head - 33 GB at 32k slots - so it
+    is never materialised; each chunk of query rows is softmaxed against
+    all keys and discarded.
+    """
+    scale = q.shape[-1] ** -0.5
+    out = torch.empty_like(q, dtype=torch.float32)
+    kf, vf = k.float(), v.float()
+    for start in range(0, q.shape[0], chunk):
+        rows = q[start:start + chunk].float()
+        scores = torch.einsum('qhd,khd->hqk', rows, kf) * scale
+        probability = torch.softmax(scores, dim=-1)
+        out[start:start + chunk] = torch.einsum('hqk,khd->qhd', probability,
+                                                vf)
+        del scores, probability
     return out * layout.slot_valid.to(out.dtype)[:, None, None]
 
 
@@ -131,6 +146,8 @@ def main() -> None:
                         default=[10.0, 20.0, 44.0],
                         help='percent of key tiles kept per query tile')
     parser.add_argument('--tau', type=float, nargs='+', default=[1.3])
+    parser.add_argument('--device', default=None,
+                        help='cuda makes the dense reference tractable')
     parser.add_argument('--baseline', default=None,
                         help='rule to pair against, e.g. "top-k 10%%"')
     args = parser.parse_args()
@@ -141,7 +158,9 @@ def main() -> None:
     rows: dict[str, list] = {}
     kept: dict[str, list] = {}
     for path in paths:
-        capture = torch.load(path, map_location='cpu', weights_only=False)
+        where = args.device or ('cuda' if torch.cuda.is_available()
+                                else 'cpu')
+        capture = torch.load(path, map_location=where, weights_only=False)
         for name, (count, error) in evaluate(capture, args.density,
                                              args.tau).items():
             rows.setdefault(name, []).append(error)

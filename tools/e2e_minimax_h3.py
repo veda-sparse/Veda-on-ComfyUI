@@ -122,10 +122,11 @@ def build_graph(args, mode: str, prefix: str) -> dict:
               # selflift validates that it is plain Euler: it reuses the
               # last low-resolution prediction across the transition, so
               # a multistep sampler's history would not carry.
-              'inputs': {'sampler_name':
-                         'euler' if args.two_stage else 'res_multistep'}},
+              'inputs': {'sampler_name': args.sampler_name
+                         or ('euler' if args.two_stage
+                             else 'res_multistep')}},
         '10': {'class_type': 'BasicScheduler',
-               'inputs': {'model': ['2', 0], 'scheduler': 'simple',
+               'inputs': {'model': ['2', 0], 'scheduler': args.scheduler,
                           'steps': args.steps, 'denoise': 1.0}},
         '12': {'class_type': 'SamplerCustomAdvanced',
                'inputs': {'noise': ['8', 0], 'guider': ['11', 0],
@@ -148,6 +149,14 @@ def build_graph(args, mode: str, prefix: str) -> dict:
         node = '3' if kind == 'veda' else str(30 + i)  # Veda keeps id 3
         graph[node] = _chain_node(args, kind, model)
         model = [node, 0]
+    if args.sigma_shift:
+        # The reported workflow puts this after Veda, so the model the
+        # guider sees is a clone made downstream of the patch.
+        video, audio = (float(x) for x in args.sigma_shift.split(','))
+        graph['19'] = {'class_type': 'MiniMaxH3SigmaShift',
+                       'inputs': {'model': model, 'shift_video': video,
+                                  'shift_audio': audio}}
+        model = ['19', 0]
     graph['11'] = {'class_type': 'BasicGuider',
                    'inputs': {'model': model, 'conditioning': ['7', 0]}}
     if args.two_stage:
@@ -252,6 +261,10 @@ def main() -> None:
                         help='T2VA keyframe in ComfyUI/input; makes a '
                              "'cond' reference span on the FL2VA model")
     parser.add_argument('--sparsity', default='32')
+    parser.add_argument('--scheduler', default='simple')
+    parser.add_argument('--sampler-name', default=None)
+    parser.add_argument('--sigma-shift', default=None,
+                        help="'video,audio', e.g. '12,3'")
     parser.add_argument('--selection', default='fixed',
                         choices=('fixed', 'adaptive'))
     parser.add_argument('--tau', type=float, default=1.3)

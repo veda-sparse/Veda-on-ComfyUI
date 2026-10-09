@@ -30,14 +30,6 @@
       "verbose": {
         "name": "verbose",
         "tooltip": "每次运行后在节点上额外显示耗时和诊断信息，并在日志里记录每个决定。"
-      },
-      "selection": {
-        "name": "selection",
-        "tooltip": "每个 query tile 怎么挑 key tile。\"fixed\" 固定保留上面那个数量；\"adaptive\" 由每个 query tile 自己的打分决定，保留打分高出该行均值 \"tau\" 个标准差的 tile，于是数量随内容和视频尺寸变化，而不是事先定死。"
-      },
-      "tau": {
-        "name": "tau",
-        "tooltip": "selection 为 \"adaptive\" 时的阈值，单位是该行打分分布的标准差，与 ComfyUI 的 Sol-Attn 一致。越大越稀疏：1.0 约保留 16% 的 key tile，1.5 约 7%，2.0 约 2.7%。selection 为 \"fixed\" 时忽略。"
       }
     },
     "outputs": {

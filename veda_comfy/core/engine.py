@@ -149,14 +149,10 @@ class VedaEngine:
 
     def __init__(self, bundle: veda_bundle.PredictorBundle,
                  generated: selection.Budget, reference: selection.Budget,
-                 backend, device: torch.device,
-                 tau: float | None = None):
+                 backend, device: torch.device):
         self.bundle = bundle
         self.generated = generated
         self.reference = reference
-        # None keeps the fixed budgets above; a value selects adaptively
-        # at that many sigmas instead (Sol-Attn's rule).
-        self.tau = tau
         self.backend = backend
         self.device = device
         self.stats = Stats()
@@ -310,11 +306,7 @@ class VedaEngine:
                         proj_q.index_select(0, heads_chunk),
                         proj_k.index_select(0, heads_chunk))
                 with timer('select'):
-                    if self.tau is None:
-                        index, keep = selection.select(scores, layout, blocks)
-                    else:
-                        index, keep = selection.select_adaptive(
-                            scores, layout, blocks, self.tau)
+                    index, keep = selection.select(scores, layout, blocks)
                     del scores
                     self.stats.add(keep, layout)
                     mask = selection.block_mask(index, keep, layout)

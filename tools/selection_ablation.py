@@ -128,18 +128,12 @@ def rule_topk_log_rows(scores, layout, budget):
                      budget)
 
 
-def rule_adaptive(scores, layout, budget, tau):
-    blocks = selection.column_blocks(layout, budget, budget)
-    index, keep = selection.select_adaptive(scores, layout, blocks, tau)
-    return selection.block_mask(index, keep, layout)
-
-
 def kept_per_row(mask, layout) -> float:
     n = layout.n_video_tiles
     return mask[:, :n, :n].sum(-1).float().mean().item()
 
 
-def evaluate(capture, densities, taus):
+def evaluate(capture, densities):
     """One capture -> {rule: (mean kept per row, [H] error)}."""
     q, k, v = capture['q'], capture['k'], capture['v']
     layout = _layout(capture, q.device)
@@ -157,12 +151,6 @@ def evaluate(capture, densities, taus):
             got = _block_sparse(q, k, v, mask, layout)
             out[name] = (kept_per_row(mask, layout),
                          _error(got, want, layout))
-    for tau in taus:
-        budget = selection.Budget(tiles=max(1, n // 10))
-        mask = rule_adaptive(scores, layout, budget, tau)
-        got = _block_sparse(q, k, v, mask, layout)
-        out[f'adaptive tau {tau:g}'] = (kept_per_row(mask, layout),
-                                        _error(got, want, layout))
     return out
 
 
@@ -172,7 +160,6 @@ def main() -> None:
     parser.add_argument('--density', type=float, nargs='+',
                         default=[10.0, 20.0, 44.0],
                         help='percent of key tiles kept per query tile')
-    parser.add_argument('--tau', type=float, nargs='+', default=[1.3])
     parser.add_argument('--device', default=None,
                         help='cuda makes the dense reference tractable')
     parser.add_argument('--baseline', default=None,
@@ -188,8 +175,7 @@ def main() -> None:
         where = args.device or ('cuda' if torch.cuda.is_available()
                                 else 'cpu')
         capture = torch.load(path, map_location=where, weights_only=False)
-        for name, (count, error) in evaluate(capture, args.density,
-                                             args.tau).items():
+        for name, (count, error) in evaluate(capture, args.density).items():
             rows.setdefault(name, []).append(error)
             kept.setdefault(name, []).append(count)
 

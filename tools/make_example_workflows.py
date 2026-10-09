@@ -102,9 +102,8 @@ def _veda_node(node_id: int, pos, in_link: int, out_link: int,
         # verbose, selection, tau. One value per widget -- a stale
         # extra entry does not error, it shifts every later widget by one.
         'widgets_values': [known.filename, veda_settings.DEFAULT_BUDGET,
-                           veda_settings.DEFAULT_BUDGET, '', '', False,
-                           veda_settings.FIXED,
-                           veda_settings.DEFAULT_TAU],
+                           veda_settings.DEFAULT_BUDGET,
+                           '', '', False],
     }
 
 

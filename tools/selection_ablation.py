@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from veda_comfy.core import reference, selection, tiling  # noqa: E402
 
 
-def _layout(capture):
+def _layout(capture, device):
     """Rebuilds the tile layout a capture describes.
 
     Captures store spans rather than the TileLayout itself: that class
@@ -48,7 +48,7 @@ def _layout(capture):
     """
     spans = [tiling.TiledSpan(start, tuple(grid), tiling.TileShape(*shape))
              for start, grid, shape in capture['spans']]
-    return tiling.build_tile_layout(spans, capture['seq_len'])
+    return tiling.build_tile_layout(spans, capture['seq_len'], device)
 
 
 def _dense(q, k, v, layout, chunk: int = 2048):
@@ -115,7 +115,7 @@ def kept_per_row(mask, layout) -> float:
 def evaluate(capture, densities, taus):
     """One capture -> {rule: (mean kept per row, [H] error)}."""
     q, k, v = capture['q'], capture['k'], capture['v']
-    layout = _layout(capture)
+    layout = _layout(capture, q.device)
     scores = capture['scores']
     want = _dense(q, k, v, layout)
     n = layout.n_video_tiles

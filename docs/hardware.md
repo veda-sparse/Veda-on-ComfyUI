@@ -121,6 +121,18 @@
   另一个说法，不是"tile 边界上的 artifact"。用户报的"固定第 51 帧"没有复现——他用的是
   自定义 ref2va 融合权重和自定义 LoRA，我们用的是官方权重。
 
+- 2026-10-09，RTX PRO 6000 Blackwell（SM120），**Sol 池化误差修正端到端**：双采
+  864x480 x 10.1 s，第一段 token 网格 8x14x72、第二段 15x27x72。
+
+  | 配置 | 实际算的注意力（一段 / 二段） | 每步 |
+  |---|---|---|
+  | 预算 32，无修正 | 65.4% / 21.5% | 3.8 s |
+  | **预算 8 + 修正** | **31.8% / 10.3%** | **3.8 s** |
+
+  **同样的耗时，算的注意力少一半**；按 kernel 微基准，预算 8 加修正的相对 L2 是 0.427，
+  预算 32 不加是 1.279（低 3 倍）。节点上显示 `Selection: generated 8 tiles · reference 0%
+  · pooled correction`。kernel 与 fp32 参考对齐到 1e-4。**只在 SM120 上验过。**
+
 - 2026-10-06，**RTX 5070 12 GB（SM120），Windows 11，torch 2.14.1+cu130，triton-windows
   3.8.0，SageAttention 2.2.0+cu130，ComfyUI 0.38.0 + KJNodes 1.5.2**：与其他注意力节点的
   交叉验证，以及显存开销的定位（`tools/e2e_minimax_h3.py`，T2VA FL2VA int8 + 8 步 Turbo

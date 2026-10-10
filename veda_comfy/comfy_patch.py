@@ -159,9 +159,11 @@ def _no_kernel_text(resolution) -> tuple[str, str]:
     if not resolution.has_candidate:
         return (f'Veda off: {label} has no sparse kernel; using full '
                 'attention. Veda needs an NVIDIA GPU of SM80 (RTX 30 '
-                'series) or newer, or Apple silicon.',
+                'series) or newer, an AMD RDNA3 / RDNA4 GPU (RX 7000 / '
+                '9000 series) on ROCm, or Apple silicon.',
                 f'Veda 未启用：{label} 没有可用的稀疏 kernel，本次使用全'
                 '注意力。Veda 需要 SM80（RTX 30 系）或更新的 NVIDIA 显卡，'
+                'ROCm 上的 AMD RDNA3 / RDNA4 显卡（RX 7000 / 9000 系），'
                 '或者 Apple 芯片。')
     lines = [f'Veda off: {label} is supported, but its sparse kernel did '
              'not start on this install; using full attention.',

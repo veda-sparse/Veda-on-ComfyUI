@@ -13,13 +13,27 @@
 | RTX 50（5090 等） | sm120 | triton-int8 | ✅（RTX 5070） | 🧪 | TMA 只能 `.shared::cta`，`num_ctas` 必须为 1 |
 | RTX PRO 6000 Blackwell | sm120 | triton-int8 | 🧪 | 🧪 | |
 | DGX Spark（GB10） | sm121 | triton-int8 | — | 🧪 | aarch64 + CUDA 13 |
-| SM75 及以下 / ROCm / CPU | — | 无 | — | — | 节点让模型跑自己的注意力 |
+| Radeon RX 9000（RDNA4） | gfx12 | triton-int8 | ✅（RX 9060 XT） | 🧪 | HIP 上 8 warps，见 int8_kernel.md |
+| Radeon RX 7000（RDNA3） | gfx11 | triton-int8 | 🧪 | 🧪 | |
+| SM75 及以下 / 其他 ROCm（RDNA2、CDNA）/ CPU | — | 无 | — | — | 节点让模型跑自己的注意力 |
 | Apple silicon（M 系列） | — | mlx | — | — | macOS ✅（M3 Pro） |
 
-一个 kernel 覆盖 SM80 起的所有 CUDA 卡，所以这张表现在是"验证到哪了"，不是"用哪个实现"。
+一个 kernel 覆盖 SM80 起的所有 CUDA 卡和 ROCm 上的 RDNA3 / RDNA4，所以这张表现在是"验证到哪了"，不是"用哪个实现"。
 
 ## 验证记录
 
+- 2026-10-10，**Radeon RX 9060 XT 16 GB（gfx1200），Windows 11，torch 2.16.0a0+rocm10.2，
+  triton-windows 3.8.0**，`triton-int8`：
+  - `tests/gpu` 3 passed。对 fp32 参考的相对误差 1.28%-1.33%（稠密、10% 稀疏、带 padding
+    三种），与 sm120 上的 1.34% 一致。
+  - `tools/tune_int8.py`（90% 稀疏，24 头）：latent_t 37（43 648 slot）上 4 warps / 3 stages
+    391.7 ms，8 warps / 3 stages 60.5 ms；latent_t 102（119 296 slot）上 2530.5 ms 对
+    378.6 ms，即 6.5x / 6.7x。8 warps / 2 stages 是 286.9 / 1900.9 ms，key block 128 也更慢。
+    所以 HIP 上 `WARPS = 8`，其余不变。
+  - `tools/bench_attention.py`（16:9，90% 稀疏，随机打分器，单层，含打分、gather、scatter）：
+    latent_t 37（38 228 token）SDPA（AOTriton）1016.6 ms，Veda 220.2 ms（4.62x）；latent_t 102
+    （104 484 token）7991.0 ms 对 1028.3 ms（7.77x）。这里的 SDPA 走 AOTriton 的 flash kernel，
+    不是 sm120 记录里那条走不了 flash 的 Windows SDPA，所以倍数不能直接和那边比。
 - 2026-10-03，**sm86（3090）/ sm89（4090）：只做了静态审查，没有上机**，所以上表仍是 🧪。
   这条通路没有按架构分支（门槛只有 `cc >= (8, 0)`），TMA 默认关闭所以 SM90+ 的代码到不了，
   用到的 MMA 都在 SM80 的指令集里，共享内存峰值约 88 KiB 而这两代的每 SM 预算是 100 KiB——

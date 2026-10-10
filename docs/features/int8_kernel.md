@@ -113,8 +113,25 @@ Blackwell 上的主要收益来自把一个 key tile **多播给 cluster 里的�
 显示 `Veda off: no sparse kernel works on ...` 加原因，然后让模型跑自己的注意力。代价是没有
 加速，不是坏结果。
 
+## ROCm（RDNA3 / RDNA4）
+
+kernel 一行没改：`tl.dot` 的 int8 x int8 和 fp16 x fp16 在 Triton 的 AMD 后端降为 WMMA，
+TMA 那条路照旧到不了（`USE_TMA` 为 `False`）。改的只有三处：
+
+- **候选表看 gfx target，不看 `cc`**。ROCm 上 torch 报的 `(major, minor)` 是从 gfx 编号拆出来的
+  （gfx1200 报 `(12, 0)`），和 SM 没有对应关系，所以 `hardware` 在 ROCm 上把 `family` 设成
+  gfx target，`candidates()` 只放行 gfx11 / gfx12：这两代有 int8 WMMA。RDNA2（gfx103x）没有
+  WMMA，Triton 只能退到标量 FMA；CDNA（gfx9，wave64）没有上机测过。两者都不给候选。
+- **`WARPS` 在 HIP 上是 8**。4 warps 在 gfx1200 上慢 6 倍以上（数字见 hardware.md 2026-10-10），
+  这不是微调，是另一个量级，所以按 `torch.version.hip` 分开，CUDA 的配置不变。8 warps 下
+  2 stages 反而比 3 stages 慢很多，key block 128 也更慢，所以其余参数保持原样。
+- 共享内存：按上面算的峰值约 88 KiB，而 RDNA 每个 workgroup 的 LDS 是 64 KiB。AMD 后端的
+  流水方式和 NVIDIA 不同，实测这组配置能编译并通过自检；如果别的 Triton 版本越界，会是
+  编译期 `OutOfResources`，节点退回模型自己的注意力，不会坏图。
+
 ## 待做
 
+- 在 RDNA3（gfx11）和 Linux ROCm 上回归。
 - 在 SM80 / SM86 / SM89 / SM90 / SM100 上回归（4090 / 3090 目前只有上面那份静态审查），
   并在有 cluster 的卡上扫一次 TMA，结果写进 hardware.md。
 - kernel 对"完美线性缩放"的理想值是 66% 效率（端到端 2.95 s/步 对 1.95 s）。整条注意力路径

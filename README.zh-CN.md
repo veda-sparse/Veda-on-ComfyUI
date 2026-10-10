@@ -25,7 +25,7 @@
 - **默认安全**：每个 kernel 在使用前先在你的显卡上自检。Veda 处理不了的情况交还给模型自己的
   注意力，并在节点上说明原因，而不是给你一张坏图。
 - **不用额外安装**：稀疏 kernel 跟节点一起发布，从 Comfy Registry 安装时会自动带上
-  Triton（NVIDIA，SM80 及以上）或 MLX（Apple silicon）。
+  Triton（NVIDIA SM80 及以上，ROCm 上的 AMD RDNA3 / RDNA4）或 MLX（Apple silicon）。
 
 ## 安装
 
@@ -115,8 +115,8 @@ ComfyUI 在 `--use-sage-attention` 后面跑的那套代码，所以画质和那
 
 ## 硬件
 
-一个 Triton kernel 覆盖 SM80 起的所有 NVIDIA 显卡，Windows 和 Linux 都一样。更老的卡、ROCm
-和 CPU 没有 kernel：节点会说明，模型跑自己的注意力。
+一个 Triton kernel 覆盖 SM80 起的所有 NVIDIA 显卡和 ROCm 上的 AMD RDNA3 / RDNA4，Windows 和
+Linux 都一样。更老的卡、其他 AMD 显卡和 CPU 没有 kernel：节点会说明，模型跑自己的注意力。
 
 | 硬件 | 状态 |
 |---|---|
@@ -125,6 +125,8 @@ ComfyUI 在 `--use-sage-attention` 后面跑的那套代码，所以画质和那
 | B200 / B300（sm100 / sm103） | 代码路径就绪，尚未在该硬件上验证 |
 | RTX 50、RTX PRO 6000 Blackwell（sm120） | **已验证：RTX 5070 + Windows 11** |
 | DGX Spark / GB10（sm121） | 代码路径就绪，尚未在该硬件上验证 |
+| Radeon RX 9000（RDNA4，gfx12），ROCm | 已验证：RX 9060 XT + Windows 11 |
+| Radeon RX 7000（RDNA3，gfx11），ROCm | 代码路径就绪，尚未在该硬件上验证 |
 | Apple silicon（M 系列） | 已验证：M3 Pro + macOS 15 |
 
 分架构的说明和完整实测记录见

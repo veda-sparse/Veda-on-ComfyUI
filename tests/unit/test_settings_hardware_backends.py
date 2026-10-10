@@ -95,6 +95,18 @@ def test_non_cuda_candidates():
     assert backends.candidates(_info((7, 5), 'NVIDIA T4')) == []
 
 
+@pytest.mark.parametrize('arch,cc,expected', [
+    ('gfx1200', (12, 0), ['triton-int8']),
+    ('gfx1100', (11, 0), ['triton-int8']),
+    ('gfx1030', (10, 3), []),
+    ('gfx942', (9, 4), []),
+])
+def test_rocm_candidates(arch, cc, expected):
+    info = dataclasses.replace(_info(cc, 'AMD Radeon'), family=arch,
+                               subtype='rocm', cuda=None)
+    assert backends.candidates(info) == expected
+
+
 def test_reference_backend_passes_self_test_on_cpu():
     base.self_test(ReferenceBackend(), torch.device('cpu'), torch.float32)
 

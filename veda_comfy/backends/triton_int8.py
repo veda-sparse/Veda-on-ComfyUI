@@ -1,4 +1,4 @@
-"""Triton INT8 block-sparse attention: the default CUDA path.
+"""Triton INT8 block-sparse attention: the CUDA and ROCm path.
 
 This is the same arithmetic ComfyUI runs behind `--use-sage-attention`
 (`from sageattention import sageattn`), so its accuracy is ComfyUI's, with
@@ -6,9 +6,9 @@ Veda's block sparsity on top. On an RTX 5070 it reaches ~125 TFLOPS dense
 against ~45 for our bf16 CuTe kernel, and ~1.3% relative error against an
 fp32 reference where FP8 costs ~5.3%.
 
-Covers every CUDA GPU from SM80 on, because Triton does: one backend
-instead of one per SM family, and no fallback behind it (see
-backends/__init__.py for why that is deliberate).
+Covers every CUDA GPU from SM80 on and RDNA3 / RDNA4 on ROCm, because
+Triton does: one backend instead of one per SM family, and no fallback
+behind it (see backends/__init__.py for why that is deliberate).
 
 Self-contained on purpose (see backends/base.py): imports only this file,
 torch, and `veda_comfy.kernels.sage`.
@@ -76,9 +76,12 @@ class TritonInt8Backend(base.Backend):
 
 
 def create(info) -> base.Backend:
-    if info.kind != 'cuda' or info.cc is None or info.cc < _MIN_CC:
+    rocm = info.subtype == 'rocm'
+    if info.kind != 'cuda' or info.cc is None or (
+            not rocm and info.cc < _MIN_CC):
         raise base.BackendUnavailable(
-            'triton-int8 needs a CUDA GPU of SM80 or newer')
+            'triton-int8 needs a CUDA GPU of SM80 or newer, or RDNA3 / '
+            'RDNA4 on ROCm')
     try:
         _kernel()
     except ImportError as error:

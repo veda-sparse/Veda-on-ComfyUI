@@ -44,8 +44,10 @@ TILE = 128
 # Upstream's key block. One Veda tile is two of these.
 KEY_BLOCK = 64
 # Measured by tools/tune_int8.py on an RTX 5070; upstream's 8 warps for
-# head_dim 128 is 12% slower here.
-WARPS, STAGES = 4, 3
+# head_dim 128 is 12% slower here. On ROCm 8 is the measured choice: 4
+# warps runs the kernel at a fraction of its speed there.
+WARPS = 8 if torch.version.hip else 4
+STAGES = 3
 LOG2E = 1.4426950408889634
 # Set by tools/tune_int8.py to sweep launch options; None in production,
 # where recompiling on a user's machine would stall sampling.

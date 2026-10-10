@@ -19,8 +19,9 @@
   | 设备 | kernel |
   |---|---|
   | CUDA SM80 及以上 | `triton-int8` |
+  | ROCm gfx11 / gfx12（RDNA3 / RDNA4） | `triton-int8` |
   | Apple MPS | `mlx` |
-  | 其他（CPU、ROCm、SM75 及以下） | 无（节点让模型跑自己的注意力） |
+  | 其他（CPU、其他 ROCm 架构、SM75 及以下） | 无（节点让模型跑自己的注意力） |
 
   曾经是五个后端加两层回退。删掉的理由在 int8_kernel.md 里：回退链会静默把用户换到更慢或更不准
   的 kernel 上，而他们以为自己在跑原来那个。
@@ -29,7 +30,8 @@
 ## 各后端
 
 - `triton-int8`：Triton 写的 INT8 块稀疏注意力，算术取自 SageAttention v1（即 ComfyUI
-  `--use-sage-attention` 背后那一份）。覆盖 SM80 起的所有 CUDA 卡。详见
+  `--use-sage-attention` 背后那一份）。覆盖 SM80 起的所有 CUDA 卡和 ROCm 上的 RDNA3 /
+  RDNA4。详见
   [int8_kernel.md](int8_kernel.md)。
 - `mlx`：按 query tile gather 选中的 key tile 后做注意力，跑在 MLX 上（Apple silicon），
   q/k/v 在统一内存里拷贝交接。

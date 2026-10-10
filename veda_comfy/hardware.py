@@ -36,7 +36,8 @@ class DeviceInfo:
         index: Device index for CUDA, else None.
         name: Marketing name, e.g. 'NVIDIA GeForce RTX 4090'.
         cc: CUDA compute capability (major, minor), None off CUDA.
-        family: 'sm89', 'sm120', 'sm121', ..., 'mps', 'cpu', 'rocm'.
+        family: 'sm89', 'sm120', 'sm121', ..., the gfx target on ROCm
+            (e.g. 'gfx1200'), 'mps', 'cpu'.
         subtype: Product class, e.g. 'rtx40', 'rtx-pro-blackwell',
             'dgx-spark', 'apple-silicon'.
         os: 'linux', 'windows' or 'darwin'.
@@ -116,7 +117,10 @@ def _describe(device_str: str) -> DeviceInfo:
         props = torch.cuda.get_device_properties(index)
         cc = (props.major, props.minor)
         if torch.version.hip:
-            return DeviceInfo('cuda', index, props.name, cc, 'rocm', 'rocm',
+            # The family is the gfx target; gcnArchName may carry feature
+            # flags after it, e.g. 'gfx90a:sramecc+:xnack-'.
+            arch = props.gcnArchName.split(':')[0]
+            return DeviceInfo('cuda', index, props.name, cc, arch, 'rocm',
                               os_name, machine, props.total_memory, False,
                               None)
         family = _FAMILIES.get(cc, f'sm{cc[0]}{cc[1]}')

@@ -7,6 +7,7 @@ so it says what was wrong and how to write it instead.
 from __future__ import annotations
 
 import dataclasses
+import math
 import re
 from collections.abc import Sequence
 
@@ -100,6 +101,120 @@ def parse_sparsity(text: str, what: str,
         '或整数如 "24"（每个 query tile 保留 24 个 128-token 的 tile）。'))
 
 
+def parse_resolution_budgets(
+        text: str) -> tuple[tuple[float, selection.Budget], ...]:
+    """Parse '1:32, 2:64, 64' into MP upper bounds and tile budgets.
+
+    The final entry is the budget above the last threshold.
+    """
+    parts = [part.strip() for part in (text or '').split(',')]
+    if len(parts) < 2 or any(not part for part in parts):
+        raise ValueError(
+            'resolution_budgets: use ascending MP limits followed by a '
+            'final budget, e.g. "1:32, 2:64, 64".')
+    rules = []
+    previous = 0.0
+    for part in parts[:-1]:
+        if part.count(':') != 1:
+            raise ValueError(
+                'resolution_budgets: each MP band must be "limit:tiles".')
+        bound_text, budget_text = part.split(':')
+        try:
+            bound = float(bound_text.strip())
+        except ValueError as error:
+            raise ValueError(
+                f'resolution_budgets: invalid MP limit {bound_text!r}.'
+            ) from error
+        if not (0 < bound < float('inf') and bound > previous):
+            raise ValueError(
+                'resolution_budgets: MP limits must be finite, positive '
+                'and strictly increasing.')
+        budget = parse_sparsity(
+            budget_text.strip(), 'resolution_budgets')
+        if budget.tiles is None:
+            raise ValueError(
+                'resolution_budgets: use positive whole-number tile '
+                'budgets, not percentages.')
+        rules.append((bound, budget))
+        previous = bound
+    final = parse_sparsity(parts[-1], 'resolution_budgets')
+    if final.tiles is None:
+        raise ValueError(
+            'resolution_budgets: final budget must be a tile count.')
+    rules.append((float('inf'), final))
+    return tuple(rules)
+
+
+def budget_for_grid(
+    grid: tuple[int, int, int],
+    fallback: selection.Budget,
+    rules: tuple[tuple[float, selection.Budget], ...],
+) -> selection.Budget:
+    """Choose a generated attention budget from the H3 spatial grid."""
+    if not rules:
+        return fallback
+    # H3 video tokens represent 32x32 output pixels per spatial cell.
+    megapixels = (grid[1] * 32) * (grid[2] * 32) / 1_000_000
+    for limit, budget in rules:
+        if megapixels <= limit:
+            return budget
+    return rules[-1][1]
+
+
+@dataclasses.dataclass(frozen=True)
+class TemporalPolicy:
+    """Calibrated, opt-in generated tile scaling above a spatial threshold."""
+
+    min_mp: float = 1.0
+    baseline: int = 72
+    target: int = 87
+    target_tiles: int = 97
+    max_tiles: int = 168
+    strength: float = 1.0
+
+    def __post_init__(self):
+        if not math.isfinite(self.strength) or self.strength < 0:
+            raise ValueError('video_length_scaling must be finite and >= 0')
+        if not math.isfinite(self.min_mp) or self.min_mp <= 0:
+            raise ValueError(
+                'temporal_min_megapixels must be positive and finite')
+        if self.baseline < 1 or self.target <= self.baseline:
+            raise ValueError('temporal_target_positions must exceed a positive '
+                             'temporal_baseline_positions')
+        if self.target_tiles < 1 or self.max_tiles < 1:
+            raise ValueError('temporal tile budgets must be positive')
+        if self.max_tiles < self.target_tiles:
+            raise ValueError('temporal_max_generated_budget must be at least '
+                             'temporal_target_generated_budget')
+
+
+def effective_generated_budget(
+    grid: tuple[int, int, int],
+    fallback: selection.Budget,
+    rules: tuple[tuple[float, selection.Budget], ...],
+    policy: TemporalPolicy | None = None,
+) -> selection.Budget:
+    """Single source of truth for attention and status displays."""
+    budget = budget_for_grid(grid, fallback, rules)
+    if policy is None or not rules or budget.tiles is None:
+        return budget
+    mp = grid[1] * grid[2] * 1024 / 1_000_000
+    if mp <= policy.min_mp or grid[0] <= policy.baseline:
+        return budget
+    base = budget.tiles
+    # Temporal growth is proportional to the current spatial tile budget.
+    # A relative multiplier preserves user intent when spatial budgets change.
+    # With strength=1, base=64 and T=87 the result is exactly 97.
+    relative_increase = ((policy.target_tiles / 64.0) - 1.0)
+    increase = (grid[0] - policy.baseline) / (policy.target - policy.baseline)
+    scaled = math.ceil(base * (1.0 + policy.strength *
+                               relative_increase * increase))
+    # A temporal cap cannot reduce a budget explicitly selected by the
+    # spatial rules. Users may configure larger spatial budgets.
+    return selection.Budget(tiles=float(max(
+        math.ceil(base), min(policy.max_tiles, scaled))))
+
+
 def format_index_list(indices: Sequence[int] | frozenset[int]) -> str:
     """{0, 1, 47, 48, 49} -> '0-1, 47-49'."""
     values = sorted(indices)
@@ -139,6 +254,10 @@ class VedaSettings:
     dense_layers: frozenset[int] = frozenset()
     dense_steps: frozenset[int] = frozenset()
     verbose: bool = False
+    resolution_budgets: tuple[tuple[float, selection.Budget], ...] = ()
+    temporal_scaling: bool = False
+    temporal_policy: TemporalPolicy = dataclasses.field(
+        default_factory=TemporalPolicy)
 
     def describe(self) -> str:
         return (f'generated {format_budget(self.generated)} · reference '

@@ -269,7 +269,10 @@ class VedaPatch:
                 raise kernel_error(resolution)
             engine = veda_engine.VedaEngine(
                 self.bundle, self.settings.generated,
-                self.settings.reference, resolution.backend, device)
+                self.settings.reference, resolution.backend, device,
+                resolution_budgets=self.settings.resolution_budgets,
+                temporal_scaling=self.settings.temporal_scaling,
+                temporal_policy=self.settings.temporal_policy)
             if self.settings.verbose:
                 timer = engine.enable_timing()
                 if timer is not None:
@@ -497,7 +500,31 @@ class VedaPatch:
         lines = [f'Veda running · {engine.backend.display}',
                  f'Video: {veda_plans.describe_grid(spec.target.grid)}',
                  f'Tile plan: {choice.how}']
-        lines.append(f'Sparsity: {self.settings.describe()}')
+        if not self.settings.resolution_budgets:
+            lines.append(f'Sparsity: {self.settings.describe()}')
+        else:
+            generated = veda_settings.effective_generated_budget(
+                spec.target.grid, self.settings.generated,
+                self.settings.resolution_budgets,
+                (self.settings.temporal_policy
+                 if self.settings.temporal_scaling else None))
+            mp = (spec.target.grid[1] * 32) * (
+                spec.target.grid[2] * 32) / 1_000_000
+            base = veda_settings.budget_for_grid(
+                spec.target.grid, self.settings.generated,
+                self.settings.resolution_budgets)
+            lines.append(
+                f'Adaptive generated: '
+                f'{veda_settings.format_budget(generated)} at {mp:.2f} MP'
+                + (f', {spec.target.grid[0]} temporal positions '
+                   f'({self.settings.temporal_policy.baseline} baseline, '
+                   f'{self.settings.temporal_policy.target} target)'
+                   if self.settings.temporal_scaling else '')
+                + '; '
+                f'spatial base: '
+                f'{veda_settings.format_budget(base)}; '
+                f'reference: '
+                f'{veda_settings.format_budget(self.settings.reference)}')
         if spec.references:
             count = len(spec.references)
             mode = ('full attention' if self.settings.reference.keeps_all

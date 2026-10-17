@@ -36,6 +36,50 @@ MiniMax-H3 (T2VA, FL2VA and R2VA): one node, MODEL in and MODEL out.
   installing from the Comfy Registry pulls in Triton (NVIDIA SM80 and
   newer, AMD RDNA3 / RDNA4 on ROCm) or MLX (Apple silicon).
 
+## Optional: resolution-adaptive attention budgets
+
+The advanced Veda node inputs include **adaptive_budgets** (off by
+default) and **resolution_budgets** (default `1:32, 2:64, 64`).
+When enabled, Veda chooses the number of generated key tiles to keep based on
+the current H3 video resolution, independently for every pass through the
+same model. The reference attention budget stays as configured.
+
+The example keeps 32 tiles up to 1 MP and 64 tiles above 1 MP. Each
+`MP:tiles` entry is an inclusive upper bound; the final number is the
+fallback above the last bound. This may help balance low-resolution speed
+against higher-resolution attention quality in multi-pass workflows, but
+the values are starting points, **not artifact-free guarantees**. Disable
+the option for Veda's unchanged original behaviour.
+
+
+### Optional temporal calibration
+
+Enable `experimental_temporal_scaling` along with `adaptive_budgets` to
+increase **generated** attention tile counts for longer, high-resolution
+videos. The default experimental calibration uses 72 temporal positions as
+a baseline and increases a 64-tile spatial budget to 97 tiles at 87
+positions, capped at 168 tiles. Scaling only applies above 1 MP by default;
+reference attention is unaffected. The spatial rule remains
+`1:32, 2:64, 64`.
+
+In one MiniMax-H3 960×1664 continuation (87 temporal positions), 64 tiles
+produced three visible flashes, 77 produced one weak local flash, and 97
+produced none. A subsequent 87-position continuation also showed no visible
+flashes with the calibrated patch. This is workload-specific evidence, **not
+an artifact-free guarantee**. Increase `video_length_scaling` if artifacts
+persist, and monitor runtime and memory usage. See
+[adaptive-budget documentation](docs/features/resolution_adaptive_budgets.md).
+
+For video-length tuning, use **video_length_scaling** (default `1.0`).
+A higher value adds more attention for longer videos; a lower value can
+improve speed at greater artifact risk. `0` disables the additional
+temporal increase. The default temporal cap is 168 generated tiles.
+Changes to the spatial rules proportionally change temporal allocation.
+
+**Compatibility:** existing manual controls retain their original widget
+positions, and both new adaptive modes default to disabled. Old workflows
+should retain manual operation; verify saved widget values after upgrading.
+
 ## Installation
 
 Requires ComfyUI >= 0.38.0. In ComfyUI Manager, search "Veda". Or:

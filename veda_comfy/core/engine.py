@@ -24,6 +24,7 @@ from . import h3_layout
 from . import plans as veda_plans
 from . import predictor
 from . import selection
+from .. import settings as veda_settings
 from . import tiling
 
 # Bounds of one tile-ordered q / k / v / out copy of a head chunk. Four of
@@ -149,10 +150,15 @@ class VedaEngine:
 
     def __init__(self, bundle: veda_bundle.PredictorBundle,
                  generated: selection.Budget, reference: selection.Budget,
-                 backend, device: torch.device):
+                 backend, device: torch.device,
+                 resolution_budgets=(), temporal_scaling=False,
+                 temporal_policy=None):
         self.bundle = bundle
         self.generated = generated
         self.reference = reference
+        self.resolution_budgets = resolution_budgets
+        self.temporal_scaling = temporal_scaling
+        self.temporal_policy = temporal_policy
         self.backend = backend
         self.device = device
         self.stats = Stats()
@@ -281,7 +287,10 @@ class VedaEngine:
         chunk_bytes = self._chunk_bytes()
         for group in plan.head_groups(layer, self.device):
             layout = self._tile_layout(spec, group.shape)
-            blocks = selection.column_blocks(layout, self.generated,
+            generated = veda_settings.effective_generated_budget(
+                spec.target.grid, self.generated, self.resolution_budgets,
+                self.temporal_policy if self.temporal_scaling else None)
+            blocks = selection.column_blocks(layout, generated,
                                              self.reference)
             per_head = layout.num_slots * dim * q.element_size()
             step = max(1, chunk_bytes // per_head)

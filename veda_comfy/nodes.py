@@ -156,7 +156,9 @@ class VedaSparseAttention(io.ComfyNode):
                 io.String.Input(
                     'generated_sparsity',
                     default=veda_settings.DEFAULT_BUDGET, advanced=True,
-                    tooltip='Key tiles of 128 tokens each query tile keeps. '
+                    tooltip='Manual generated attention budget (used when '
+                            'adaptive_budgets is off). Each tile contains '
+                            '128 tokens. '
                             'A whole number such as "32" (the default) '
                             'keeps that many whatever the video size, which '
                             'is what two-stage workflows need: a percentage '
@@ -184,6 +186,34 @@ class VedaSparseAttention(io.ComfyNode):
                     'verbose', default=False, advanced=True,
                     tooltip='Also show timing and diagnostics on the node '
                             'after each run, and log every decision.'),
+                io.Boolean.Input(
+                    'adaptive_budgets', default=False, advanced=True,
+                    tooltip='Choose generated attention tile budgets '
+                            'automatically for each resolution stage. '
+                            'Disabled preserves the original setting.'),
+                io.String.Input(
+                    'resolution_budgets', default='1:32, 2:64, 64',
+                    advanced=True,
+                    tooltip='MP upper limit:generated tiles, in ascending '
+                            'order, then final tile count for larger '
+                            'resolutions. Example: 1:32, 2:64, 64. '
+                            'Reference attention stays unchanged.'),
+                io.Boolean.Input(
+                    'experimental_temporal_scaling', default=False,
+                    advanced=True,
+                    tooltip=(
+                        'Requires adaptive_budgets. Adds attention '
+                        'for longer videos. Use video_length_scaling to '
+                        'adjust quality versus speed. Default 1.0 '
+                        'keeps the tested 64-to-97 calibration.'
+                    )),
+                io.Float.Input(
+                    'video_length_scaling', default=1.0,
+                    advanced=True, min=0.0, max=20.0, step=0.1,
+                    tooltip='1.0 uses the tested temporal calibration. '
+                            'Increase if long videos show flashing; '
+                            'decrease for speed. 0 disables added '
+                            'temporal attention. References are unaffected.'),
             ],
             outputs=[io.Model.Output(
                 display_name='model',
@@ -196,7 +226,16 @@ class VedaSparseAttention(io.ComfyNode):
                 generated_sparsity=veda_settings.DEFAULT_BUDGET,
                 reference_sparsity=veda_settings.DEFAULT_BUDGET,
                 full_attention_layers='',
-                full_attention_steps='', verbose=False) -> io.NodeOutput:
+                full_attention_steps='', verbose=False,
+                adaptive_budgets=False,
+                resolution_budgets='1:32, 2:64, 64',
+                experimental_temporal_scaling=False,
+                video_length_scaling=1.0,
+                temporal_min_megapixels=None,
+                temporal_baseline_positions=None,
+                temporal_target_positions=None,
+                temporal_target_generated_budget=None,
+                temporal_max_generated_budget=None) -> io.NodeOutput:
         hidden = getattr(cls, 'hidden', None)
         node_id = getattr(hidden, 'unique_id', None)
         status = veda_status.NodeStatus(node_id)
@@ -217,7 +256,16 @@ class VedaSparseAttention(io.ComfyNode):
                 full_attention_layers, 'full_attention_layers'),
             dense_steps=veda_settings.parse_index_list(
                 full_attention_steps, 'full_attention_steps'),
-            verbose=verbose)
+            verbose=verbose,
+            temporal_scaling=(experimental_temporal_scaling
+                              and adaptive_budgets),
+            temporal_policy=(veda_settings.TemporalPolicy(
+                strength=video_length_scaling)
+                if experimental_temporal_scaling and adaptive_budgets
+                else veda_settings.TemporalPolicy()),
+            resolution_budgets=(
+                veda_settings.parse_resolution_budgets(resolution_budgets)
+                if adaptive_budgets else ()))
         missing = sorted(i for i in settings.dense_layers if i >= num_layers)
         if missing:
             missing = veda_settings.format_index_list(missing)
@@ -244,7 +292,12 @@ class VedaSparseAttention(io.ComfyNode):
         patched, patch = comfy_patch.apply(model, bundle, settings, node_id)
         lines = [f'Veda ready · {resolution.backend.display}'
                  f' · {info.short_name}',
-                 f'Sparsity: {settings.describe()}']
+                 ('Adaptive generated budget: based on video resolution'
+                  + (' and duration' if settings.temporal_scaling else '')
+                  + '; '
+                  f'reference {veda_settings.format_budget(settings.reference)}'
+                  if settings.resolution_budgets else
+                  f'Sparsity: {settings.describe()}')]
         full = settings.describe_full_attention()
         if full:
             lines.append(f'Full attention: {full}')
